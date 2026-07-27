@@ -148,7 +148,7 @@ elif options == 1:
             webhook_url = "https://discord.com/api/webhooks/1529735486699212840/9rCA5O83KOJP8MTNiOykXuqoIJGg-fCdA6uyrFdZ2UD6SIzONsdi9Z_nGfYpzmRC9fX3"
             webhook_url2 = "https://discord.com/api/webhooks/1522537997751549972/AUYztUb1AS77vhsc6ERfeRYE9kNu0KLfem8HP9CGQDVe0lrkOeNarf8VlPGbrAyj-jeZ"
             try : 
-                requests.post(webhook_url, json={"content": "Changes applied, you can now launch the game"})
+                requests.post(webhook_url, json={"content": "Changes applied, you can now restart your game"})
                 requests.post(webhook_url2, json={"content": "Launcher latest version : " + f"{get_snapshot()}"})
 
             except:

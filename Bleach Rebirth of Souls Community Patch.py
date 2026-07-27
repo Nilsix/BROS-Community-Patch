@@ -822,11 +822,20 @@ try:
         else:
             gameMode = "EightKonpakus"
         actualiseGameModeButtons()
-    
+
+    def extraKonpakuFunc():
+        global gameMode
+        if gameMode == "ExtraKonpaku":
+            gameMode = "DEFAULT"
+        else:
+            gameMode = "ExtraKonpaku"
+        actualiseGameModeButtons()
+
     def actualiseGameModeButtons():
         baseOnlyButton.config(text=f'Base Only : (Currently {"ON" if gameMode == "BaseOnly" else "OFF"})')
         instantEvoAndSublimation.config(text=f'Instant Evo and Sublimation : (Currently {"ON" if gameMode == "InstantEvoAndSublimation" else "OFF"})')
         eightKonpakus.config(text=f'8 Konpakus : (Currently {"ON" if gameMode == "EightKonpakus" else "OFF"})')
+        extraKonpaku.config(text=f'Extra Konpaku : (Currently {"ON" if gameMode == "ExtraKonpaku" else "OFF"})')
     
     def unlockDangaiIchigo():
         result = messagebox.askyesno("Unlock Dangai Ichigo", "Unlocking Dangai Ichigo this way will reset your settings and ranked progress , are you sure you want to continue?")
@@ -1052,17 +1061,28 @@ try:
         fg=bgcolor,
         command=eightKonpakusFunc
     )
+
+    extraKonpaku = Button(
+        gameModesPage,
+        text=f'Extra Konpaku : (Currently {"ON" if gameMode == "ExtraKonpaku" else "OFF"})',
+        font=("Courrier", textSize),
+        bg="white",
+        fg=bgcolor,
+        command=extraKonpakuFunc
+    )
     teamBattleButton.pack(pady=paddingYvalue, fill=X)
     instantEvoAndSublimation.pack(pady=paddingYvalue, fill=X)
     baseOnlyButton.pack(pady=paddingYvalue, fill=X)
     eightKonpakus.pack(pady=paddingYvalue, fill=X)
+    extraKonpaku.pack(pady=paddingYvalue, fill=X)
     gameModesMenuButton.pack(pady=paddingYvalue, fill=X)
 
-    # Apply hover effects to game-modes-page buttons 
+    # Apply hover effects to game-modes-page buttons
     add_hover(teamBattleButton,        "Toggle Team Battle mode: allows team fights.")
     add_hover(instantEvoAndSublimation,"Toggle Instant Evolution & Sublimation: evolution and sublimation happen immediately.")
     add_hover(baseOnlyButton,          "Toggle Base Only mode: disables evolutions and sublimations entirely. Every character starts with 6 konpaku stocks")
     add_hover(eightKonpakus,           "Toggle 8 Konpakus mode: each player starts with 8 Konpaku stocks (revive characters start with 7).")
+    add_hover(extraKonpaku,            "Toggle Extra Konpaku mode: gives every player extra Konpaku stocks.")
     add_hover(gameModesMenuButton,     "Return to the main menu.")
 
     #repairPage
