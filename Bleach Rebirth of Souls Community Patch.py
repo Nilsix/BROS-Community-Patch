@@ -831,11 +831,20 @@ try:
             gameMode = "ExtraKonpaku"
         actualiseGameModeButtons()
 
+    def suddenDeathFunc():
+        global gameMode
+        if gameMode == "SuddenDeath":
+            gameMode = "DEFAULT"
+        else:
+            gameMode = "SuddenDeath"
+        actualiseGameModeButtons()
+
     def actualiseGameModeButtons():
         baseOnlyButton.config(text=f'Base Only : (Currently {"ON" if gameMode == "BaseOnly" else "OFF"})')
         instantEvoAndSublimation.config(text=f'Instant Evo and Sublimation : (Currently {"ON" if gameMode == "InstantEvoAndSublimation" else "OFF"})')
         eightKonpakus.config(text=f'8 Konpakus : (Currently {"ON" if gameMode == "EightKonpakus" else "OFF"})')
         extraKonpaku.config(text=f'Extra Konpaku : (Currently {"ON" if gameMode == "ExtraKonpaku" else "OFF"})')
+        suddenDeath.config(text=f'Sudden Death : (Currently {"ON" if gameMode == "SuddenDeath" else "OFF"})')
     
     def unlockDangaiIchigo():
         result = messagebox.askyesno("Unlock Dangai Ichigo", "Unlocking Dangai Ichigo this way will reset your settings and ranked progress , are you sure you want to continue?")
@@ -1070,11 +1079,21 @@ try:
         fg=bgcolor,
         command=extraKonpakuFunc
     )
+
+    suddenDeath = Button(
+        gameModesPage,
+        text=f'Sudden Death : (Currently {"ON" if gameMode == "SuddenDeath" else "OFF"})',
+        font=("Courrier", textSize),
+        bg="white",
+        fg=bgcolor,
+        command=suddenDeathFunc
+    )
     teamBattleButton.pack(pady=paddingYvalue, fill=X)
     instantEvoAndSublimation.pack(pady=paddingYvalue, fill=X)
     baseOnlyButton.pack(pady=paddingYvalue, fill=X)
     eightKonpakus.pack(pady=paddingYvalue, fill=X)
     extraKonpaku.pack(pady=paddingYvalue, fill=X)
+    suddenDeath.pack(pady=paddingYvalue, fill=X)
     gameModesMenuButton.pack(pady=paddingYvalue, fill=X)
 
     # Apply hover effects to game-modes-page buttons
@@ -1083,6 +1102,7 @@ try:
     add_hover(baseOnlyButton,          "Toggle Base Only mode: disables evolutions and sublimations entirely. Every character starts with 6 konpaku stocks")
     add_hover(eightKonpakus,           "Toggle 8 Konpakus mode: each player starts with 8 Konpaku stocks (revive characters start with 7).")
     add_hover(extraKonpaku,            "Toggle Extra Konpaku mode: gives every player extra Konpaku stocks.")
+    add_hover(suddenDeath,             "Toggle Sudden Death mode.")
     add_hover(gameModesMenuButton,     "Return to the main menu.")
 
     #repairPage
