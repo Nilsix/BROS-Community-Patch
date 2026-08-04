@@ -244,6 +244,82 @@ static void patch_byakuya_evo_icon(void)
         log_line("BYAKUYA_ICON: VirtualProtect(vtable slot) failed");
     }
 }
+static void patch_aizen_kikon_counter(void)
+{
+    /* Aizen (pl020) Kikon Counter now costs the 5 flames ONLY -- Pl20-ONLY.
+       The engine calls this mechanic KIKON_COUNTER (string at VA 0x1414700C0,
+       three bytes after "ct_reset"); it is the R3+L3 cancel of an opponent's
+       Kikon. It is entirely hardcoded: pl020.tadjpkg's 1_normal_ct_ct_reset is
+       four blocks of cutscene + invulnerability with no cost, and there is no
+       ct_reset node in his tcmb at all.
+
+       Shipped, it also required a FULL reverse gauge and consumed all of it.
+       The gauge is two floats on the fighter -- +0x10B0 max, +0x10B4 value --
+       drawn as rebirth_gauge1/2/3, i.e. the "bars" players count.
+
+         RVA 0x4F2B6F  76 05                 jbe -> EB 05 jmp   (requirement always passes)
+         RVA 0x4F3240  44 89 85 54 02 00 00  mov [rbp+0x254],r8d -> 7-byte nop
+         RVA 0x4F3308  E8 43 BA CF FF        call 0x1401EED50    -> 5-byte nop
+
+       Site 2 is the deduction. It sits inside a stack copy of
+       self+0xFA0..+0x1340 that is copied straight back, and it is the only
+       modification between copy-out and copy-back -- so nopping the single
+       store makes the whole copy a no-op.
+
+       Site 3 is the HUD widget, and it is NOT optional. 0x1401EED50 is
+       event-driven, not a per-frame resync, so removing the deduction without
+       it would empty the DISPLAYED gauge while the value stayed full.
+
+       Left alone deliberately: the flames cost (0x1404F31C3 still zeroes
+       UNIQUE_0 at fighter+0x1A34), the once-per-match flag (+0x1A5C), the
+       base-form gate, and the shipped blocklist that stops the counter working
+       against pl000-pl004 and pl033.
+
+       Pl20-ONLY is proven, not assumed: all three sites are inside 0x1404F2980
+       (the gate) and 0x1404F3070 (the executor), whose callers trace back
+       through vtables 0x14146D748 / 0x141468C88 to constructors reachable only
+       from pl020's behaviour slot at 0x1418E1130. */
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    if (!mod) return;
+
+    unsigned char* gate = mod + 0x4F2B6F;   /* jbe  -> jmp */
+    unsigned char* dedu = mod + 0x4F3240;   /* mov  -> nop */
+    unsigned char* hud  = mod + 0x4F3308;   /* call -> nop */
+
+    static const unsigned char sig_gate[2] = {0x76,0x05};
+    static const unsigned char sig_dedu[7] = {0x44,0x89,0x85,0x54,0x02,0x00,0x00};
+    static const unsigned char sig_hud [5] = {0xE8,0x43,0xBA,0xCF,0xFF};
+
+    /* All three or none -- a half-patched counter would deduct without paying
+       back, or drain the gauge with the requirement already lifted. */
+    if (memcmp(gate, sig_gate, sizeof(sig_gate)) != 0 ||
+        memcmp(dedu, sig_dedu, sizeof(sig_dedu)) != 0 ||
+        memcmp(hud,  sig_hud,  sizeof(sig_hud))  != 0) {
+        log_line("AIZEN_COUNTER: sites not as expected (game updated?) -- skipped, cost unchanged");
+        return;
+    }
+
+    static const unsigned char rep_gate[2] = {0xEB,0x05};                          /* jmp +5        */
+    static const unsigned char rep_dedu[7] = {0x0F,0x1F,0x80,0x00,0x00,0x00,0x00}; /* nop dword[rax]*/
+    static const unsigned char rep_hud [5] = {0x0F,0x1F,0x44,0x00,0x00};           /* nop dword[rax+rax] */
+
+    struct { unsigned char* at; const unsigned char* to; SIZE_T n; } w[3] = {
+        { gate, rep_gate, sizeof(rep_gate) },
+        { dedu, rep_dedu, sizeof(rep_dedu) },
+        { hud,  rep_hud,  sizeof(rep_hud)  },
+    };
+    for (int i = 0; i < 3; i++) {
+        DWORD old;
+        if (!VirtualProtect(w[i].at, w[i].n, PAGE_EXECUTE_READWRITE, &old)) {
+            log_line("AIZEN_COUNTER: VirtualProtect failed at site %d -- PARTIAL, expect odd costs", i);
+            return;
+        }
+        memcpy(w[i].at, w[i].to, w[i].n);
+        VirtualProtect(w[i].at, w[i].n, old, &old);
+    }
+    FlushInstructionCache(GetCurrentProcess(), gate, 1);
+    log_line("AIZEN_COUNTER: Pl20-only -- Kikon Counter now costs 5 flames only (reverse gauge free)");
+}
 static DWORD WINAPI worker(LPVOID u)
 {
     (void)u;
@@ -251,6 +327,7 @@ static DWORD WINAPI worker(LPVOID u)
     load_settings();
     patch_version_string();
     patch_byakuya_evo_icon();
+    patch_aizen_kikon_counter();
     for (int i=0;i<600;i++){ int r=try_install(); if(r==1)return 0; if(r<0)return 0; Sleep(500); }
     log_line("ERROR: steam_api64/matchmaking never appeared -- is this the game process?");
     return 0;

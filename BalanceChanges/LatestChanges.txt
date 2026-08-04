@@ -865,3 +865,10 @@ General:
 	Fixed spacing and frame data when Sakanade is active
 	Changed guard_fix_time on special flash from 24 to 29 to make it plus on block giving similar plus frames as light 3.
 	Increased movement speed by 10%
+
+Aizen :
+Base :
+	Kikon Counter (R3 + L3 during the opponent's Kikon) now costs the 5 flames ONLY
+	Removed the requirement to have a full reverse gauge, and removed the reverse gauge cost
+	"He kept both costs on top of a once-per-match limit and a base-form-only gate, which made the counter almost never actually available.
+	The flame cost, the once-per-match limit, the base-form gate and the existing matchup blocklist are all unchanged."

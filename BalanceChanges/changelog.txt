@@ -16,3 +16,13 @@ TYBW ICHIGO Balance change
             blockstun : 28->27
     "light2 on block -> light1 no longer frametraps tier 1 lights online"
 
+
+
+Aizen Balance change
+    Base :
+        Kikon Counter (ct_reset / KIKON_COUNTER) :
+            Reverse gauge requirement : full -> none
+            Reverse gauge cost : full gauge -> 0
+            Flame cost : 5 -> 5 (unchanged)
+    "Applied at runtime by dinput8.dll, not by editing the exe on disk.
+    Pl20-only: all three sites are inside his own gate/executor, reachable only from his behaviour slot."
