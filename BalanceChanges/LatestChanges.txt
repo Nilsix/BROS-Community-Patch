@@ -872,3 +872,24 @@ Base :
 	Removed the requirement to have a full reverse gauge, and removed the reverse gauge cost
 	"He kept both costs on top of a once-per-match limit and a base-form-only gate, which made the counter almost never actually available.
 	The flame cost, the once-per-match limit, the base-form gate and the existing matchup blocklist are all unchanged."
+
+
+Yamamoto :
+Base and Evo :
+	SP2 :
+		Fixed the SP2 hitbox reaching behind him (made flashstepping it near-impossible)
+		while keeping the fix for it whiffing when the opponent grabs on activation.
+		The lingering hitbox is now tangent to his own position instead of centred 1.0 in front:
+		it covers 0.00 to 5.50 in front, was -1.75 to 3.75. Forward reach is also 1.75 longer than the bandaid.
+
+
+Byakuya :
+Evo :
+	Fixed not gaining petal form when SP1 lands a killing blow
+	Petal form now triggers on the FIRST hit of SP1 that connects, not the last.
+	The old gate was a combo-state check that ran a few frames after contact, so a dead opponent cancelled it.
+	SP1 is an expanding tornado (hitbox 2.5 -> 6.0 across the string), so at range the early hits whiff by design --
+	every one of the 9 hits can now trigger the form.
+	Fixed sometimes gaining PERMANENT petal form from SP2 (its duration was set to infinite by mistake;
+	it now expires on the same timer as SP1's)
+	"Hit count, damage, frame data and total length of SP1 are completely unchanged."

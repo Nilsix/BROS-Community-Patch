@@ -11,6 +11,20 @@
  *
  *  Match code: read from  patch_ranked.txt  (line 1) next to the game exe.
  *  Log:        patch_ranked.log  next to the game exe.
+ * ---------------------------------------------------------------------
+ *  CANONICAL MERGED SOURCE -- 2026-08-05.
+ *  Four divergent copies of this file existed (game dir, Patch/,
+ *  Patch_Dev_Environment/, and the community-patch repo) and each was
+ *  missing patches the others had. This file is the union of all four and
+ *  is the ONLY one that should be edited from now on. It contains:
+ *      Steam matchmaking hook   (patch-only pool + worldwide region)
+ *      patch_version_string     title -> "ReBalance <ver>"
+ *      patch_yamamoto_selfcost  sublimation-Kikon 2-konpaku self-cost -> 0
+ *      patch_byakuya_evo_icon   Pl22 stance icon kept visible in evo
+ *      patch_aizen_kikon_counter  Kikon Counter costs 5 flames only
+ *      patch_aizen_flamecost    Aizen SP1 costs 1 (base) / 3 (evo) flames
+ *  Rebuild with build_dinput8.bat and check patch_ranked.log for one line
+ *  per patch. See the header of each patch_* function for its anchors.
  * ===================================================================== */
 
 #include <windows.h>
@@ -76,7 +90,12 @@ __declspec(dllexport) HRESULT WINAPI DirectInput8Create(void* hinst, DWORD ver, 
 /* The game only imports DirectInput8Create; every later input call goes to the
    real dinput8 COM object this returns, so no other exports are needed. */
 
-/* ================= PART 2: Steam matchmaking hook =================== */
+/* ================= PART 2: Steam matchmaking hook ===================
+ *  DO NOT REMOVE OR WEAKEN THIS SECTION. It is what keeps patched players
+ *  in their own matchmaking pool: an unpatched client and a patched client
+ *  playing each other desync, so the "issuer" tag/filter and the join guard
+ *  are a correctness requirement, not a convenience. Any future edit to this
+ *  file must leave PART 2 intact. */
 #define VT_REQUEST_LIST    4   /* RequestLobbyList */
 #define VT_ADD_NUM_FILTER  6
 #define VT_DISTANCE_FILTER 9   /* AddRequestLobbyListDistanceFilter */
@@ -204,6 +223,62 @@ static void patch_version_string(void)
         log_line("VERSION: title renamed -> 'ReBalance <ver>'");
     }
 }
+static void patch_yamamoto_selfcost(void)
+{
+    /* Sublimation-Kikon self-cost removal (exe memory patch).
+       At RVA 0x5311FC the game loads xmm1 = 2.0 -- the number of the caster's
+       own konpaku (Soul stocks) to spend -- immediately before the single call
+       to the sublimation-Kikon self-cost routine (VA 0x1404EB980). Replacing
+       that load with 'xorps xmm1,xmm1' (amount = 0) + NOPs makes the cost 0.
+       The routine still runs, so the sublimation cutscene is fully preserved,
+       and 0x1404EB980 has exactly one caller and sits in no vtable, so nothing
+       else in the game reaches it.
+
+         orig:  F3 0F 10 0D 5C F1 F8 00   movss xmm1,[rip+0xF8F15C]   ; =2.0
+         new :  0F 57 C9 90 90 90 90 90   xorps xmm1,xmm1 ; nop*5     ; =0.0
+
+       RVA VERIFIED 2026-08-05 against the shipping build: the 8 original bytes
+       are present at 0x5311FC in the clean Steam exe (and in Clean_EXE/). The
+       "bytes not at expected RVA" line people were seeing in patch_ranked.log
+       was NOT a stale RVA -- it was a dev machine whose exe had the same 8
+       bytes permanently baked in on disk (the V7_NOSELFCOST static exe), so the
+       one-directional memcmp could never match. The guard below now recognises
+       the already-patched form and says so instead of crying "game updated?".
+
+       SCOPE CAVEAT (read before re-tuning): the patched instruction lives in
+       _Do_call (RVA 0x531140) of a GLOBAL std::function<void(ComponentPtr<
+       OPlayableBase>, tsd::string)> installed at static-init (RVA 0x22560).
+       Its only filter is  name.find("evo_ct_sp_break02") != npos  &&
+       name.find("_maxout") == npos . There is no [fighter+0xC00] character-id
+       compare in the lambda or in 0x1404EB980, and 37 pl*.tadjpkg define a
+       non-_maxout evo_ct_sp_break02 -- so statically this reads as roster-wide
+       (every character's awakened Kikon), not Yamamoto-only. Shipped and
+       playtested on Yamamoto (V7/V8); the wider effect has never been checked
+       in game. If the awakened Kikon self-cost matters for other characters,
+       this needs an id gate rather than an amount edit. */
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    if (!mod) return;
+    unsigned char* p = mod + 0x5311FC;
+    static const unsigned char orig[8] = {0xF3,0x0F,0x10,0x0D,0x5C,0xF1,0xF8,0x00};
+    static const unsigned char repl[8] = {0x0F,0x57,0xC9,0x90,0x90,0x90,0x90,0x90};
+    if (memcmp(p, repl, 8) == 0) {
+        log_line("SELFCOST: already 0 at RVA 0x5311FC (exe pre-patched on disk) -- nothing to do");
+        return;
+    }
+    if (memcmp(p, orig, 8) != 0) {
+        log_line("SELFCOST: bytes not at expected RVA 0x5311FC (game updated?) -- skipped");
+        return;
+    }
+    DWORD old;
+    if (VirtualProtect(p, 8, PAGE_EXECUTE_READWRITE, &old)) {
+        memcpy(p, repl, 8);
+        VirtualProtect(p, 8, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), p, 8);
+        log_line("SELFCOST: sublimation-Kikon self-cost -> 0 (RVA 0x5311FC)");
+    } else {
+        log_line("SELFCOST: VirtualProtect failed at RVA 0x5311FC");
+    }
+}
 static void patch_byakuya_evo_icon(void)
 {
     /* Byakuya (pl022) unique stance icon kept visible in evo -- Pl22-ONLY.
@@ -290,6 +365,20 @@ static void patch_aizen_kikon_counter(void)
     static const unsigned char sig_dedu[7] = {0x44,0x89,0x85,0x54,0x02,0x00,0x00};
     static const unsigned char sig_hud [5] = {0xE8,0x43,0xBA,0xCF,0xFF};
 
+    static const unsigned char rep_gate[2] = {0xEB,0x05};                          /* jmp +5        */
+    static const unsigned char rep_dedu[7] = {0x0F,0x1F,0x80,0x00,0x00,0x00,0x00}; /* nop dword[rax]*/
+    static const unsigned char rep_hud [5] = {0x0F,0x1F,0x44,0x00,0x00};           /* nop dword[rax+rax] */
+
+    /* Some dev installs run an exe that already has these three sites baked in
+       on disk. Recognise that instead of reporting it as a game update -- the
+       mechanic is live either way and there is nothing to write. */
+    if (memcmp(gate, rep_gate, sizeof(rep_gate)) == 0 &&
+        memcmp(dedu, rep_dedu, sizeof(rep_dedu)) == 0 &&
+        memcmp(hud,  rep_hud,  sizeof(rep_hud))  == 0) {
+        log_line("AIZEN_COUNTER: already applied (exe pre-patched on disk) -- nothing to do");
+        return;
+    }
+
     /* All three or none -- a half-patched counter would deduct without paying
        back, or drain the gauge with the requirement already lifted. */
     if (memcmp(gate, sig_gate, sizeof(sig_gate)) != 0 ||
@@ -298,10 +387,6 @@ static void patch_aizen_kikon_counter(void)
         log_line("AIZEN_COUNTER: sites not as expected (game updated?) -- skipped, cost unchanged");
         return;
     }
-
-    static const unsigned char rep_gate[2] = {0xEB,0x05};                          /* jmp +5        */
-    static const unsigned char rep_dedu[7] = {0x0F,0x1F,0x80,0x00,0x00,0x00,0x00}; /* nop dword[rax]*/
-    static const unsigned char rep_hud [5] = {0x0F,0x1F,0x44,0x00,0x00};           /* nop dword[rax+rax] */
 
     struct { unsigned char* at; const unsigned char* to; SIZE_T n; } w[3] = {
         { gate, rep_gate, sizeof(rep_gate) },
@@ -320,14 +405,124 @@ static void patch_aizen_kikon_counter(void)
     FlushInstructionCache(GetCurrentProcess(), gate, 1);
     log_line("AIZEN_COUNTER: Pl20-only -- Kikon Counter now costs 5 flames only (reverse gauge free)");
 }
+
+/* ================= Aizen (pl020) SP1 flame cost ======================
+ *  sp_atk01 consumes flames: 1 (base) / 3 (evo). SP2 untouched.
+ *  We detour Aizen's own per-frame unique-action handler (VA 0x140148970 /
+ *  RVA 0x148970). It self-filters by action name; we add an sp_atk01 branch.
+ *    combat  = [rcx+0x20];  char-id [combat+0xC00]==0x14 (20=Aizen)
+ *    flames  = float [combat+0x1A34]      (0..5, confirmed via CE)
+ *  Handler runs every frame -> edge-detect so we subtract once per activation.
+ *  The char-id test inside the hook is what makes this Pl20-only, so it is
+ *  safe even if the handler is ever shared.
+ *  Anchors + derivation: Patched Aizen/V6/. */
+#define AIZEN_UNIQ_RVA   0x148970
+#define AIZEN_CHARID_OFF 0xC00
+#define AIZEN_ID         0x14
+#define AIZEN_FLAME_OFF  0x1A34
+#define AIZEN_COST_BASE  1.0f
+#define AIZEN_COST_EVO   3.0f
+
+typedef long long (*aizen_uniq_t)(void* rcx, void* rdx, void* r8, void* r9);
+static aizen_uniq_t o_aizen_uniq = NULL;   /* -> trampoline (stolen bytes + jmp back) */
+static void* g_af_obj[2] = {0,0};          /* per-instance edge state (P1/P2) */
+static int   g_af_in [2] = {0,0};
+
+static int af_action_is(void* actctx, const char* want)
+{
+    if (!actctx) return 0;
+    unsigned long long cap = *(unsigned long long*)((char*)actctx + 24);
+    const char* s = (cap >= 16) ? *(const char**)actctx : (const char*)actctx;
+    if (!s) return 0;
+    int i = 0;
+    for (; want[i]; ++i) if (s[i] != want[i]) return 0;
+    return s[i] == '\0';
+}
+
+static long long hk_aizen_uniq(void* rcx, void* rdx, void* r8, void* r9)
+{
+    void* combat = rcx ? *(void**)((char*)rcx + 0x20) : NULL;
+    if (combat && *(int*)((char*)combat + AIZEN_CHARID_OFF) == AIZEN_ID) {
+        int base = af_action_is(rdx, "sp_atk01");
+        int evo  = base ? 0 : af_action_is(rdx, "evo_sp_atk01");
+        int slot = (g_af_obj[0]==combat) ? 0 : (g_af_obj[1]==combat) ? 1
+                 : (g_af_obj[0]==NULL)   ? 0 : 1;
+        g_af_obj[slot] = combat;
+        if (base || evo) {
+            if (!g_af_in[slot]) {                /* rising edge = SP1 activation */
+                g_af_in[slot] = 1;
+                float  cost  = evo ? AIZEN_COST_EVO : AIZEN_COST_BASE;
+                float* flame = (float*)((char*)combat + AIZEN_FLAME_OFF);
+                float  f     = *flame - cost;
+                if (f < 0.0f) f = 0.0f;           /* clamp; hard-block = phase 2 */
+                *flame = f;
+                log_line("AIZEN_FLAME: sp_atk01(%s) -%.0f -> %.1f flames",
+                         evo ? "evo" : "base", cost, f);
+            }
+        } else {
+            g_af_in[slot] = 0;                    /* left the move -> re-arm */
+        }
+    }
+    return o_aizen_uniq(rcx, rdx, r8, r9);        /* always run the original */
+}
+
+static void patch_aizen_flamecost(void)
+{
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    if (!mod) return;
+    unsigned char* entry = mod + AIZEN_UNIQ_RVA;
+    /* 13-byte position-independent prologue: mov [rsp+10],rbx / push rdi / sub rsp,0xD0 */
+    static const unsigned char expect[13] = {
+        0x48,0x89,0x5C,0x24,0x10, 0x57, 0x48,0x81,0xEC,0xD0,0x00,0x00,0x00
+    };
+    if (o_aizen_uniq) { log_line("AIZEN_FLAME: already installed -- skipped"); return; }
+    if (memcmp(entry, expect, sizeof expect) != 0) {
+        log_line("AIZEN_FLAME: prologue moved (game update?) -- skipped");
+        return;
+    }
+    unsigned char* tramp = (unsigned char*)VirtualAlloc(
+        NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) { log_line("AIZEN_FLAME: VirtualAlloc failed"); return; }
+    memcpy(tramp, entry, 13);                                    /* stolen prologue */
+    unsigned long long ret = (unsigned long long)(entry + 13);
+    tramp[13]=0x48; tramp[14]=0xB8; memcpy(tramp+15,&ret,8);     /* mov rax,entry+13 */
+    tramp[23]=0xFF; tramp[24]=0xE0;                              /* jmp rax          */
+    FlushInstructionCache(GetCurrentProcess(), tramp, 64);
+    o_aizen_uniq = (aizen_uniq_t)tramp;
+
+    unsigned char patch[13];
+    unsigned long long hk = (unsigned long long)&hk_aizen_uniq;
+    patch[0]=0x48; patch[1]=0xB8; memcpy(patch+2,&hk,8);         /* mov rax,&hk      */
+    patch[10]=0xFF; patch[11]=0xE0; patch[12]=0x90;              /* jmp rax ; nop    */
+    DWORD old;
+    if (VirtualProtect(entry, 13, PAGE_EXECUTE_READWRITE, &old)) {
+        memcpy(entry, patch, 13);
+        VirtualProtect(entry, 13, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), entry, 13);
+        log_line("AIZEN_FLAME: installed at RVA 0x%X (flame off 0x%X)",
+                 AIZEN_UNIQ_RVA, AIZEN_FLAME_OFF);
+    } else {
+        o_aizen_uniq = NULL;
+        log_line("AIZEN_FLAME: VirtualProtect failed");
+    }
+}
+
 static DWORD WINAPI worker(LPVOID u)
 {
     (void)u;
     log_line("==== dinput8 proxy loaded INTO GAME (pid %lu) ====", GetCurrentProcessId());
     load_settings();
     patch_version_string();
+    patch_yamamoto_selfcost();
+    /* patch_byakuya_evo_icon() repoints Pl22's vtable slot 22 (RVA 0x1440678)
+       to a private form-getter stub. The Sakura Gauge hook under development
+       writes to that SAME slot, so while testing the gauge, comment this call
+       out locally -- but it MUST stay enabled in anything that ships, or a
+       dev->live push silently removes Byakuya's evo icon (which is exactly how
+       it went missing once already). */
     patch_byakuya_evo_icon();
     patch_aizen_kikon_counter();
+    patch_aizen_flamecost();
     for (int i=0;i<600;i++){ int r=try_install(); if(r==1)return 0; if(r<0)return 0; Sleep(500); }
     log_line("ERROR: steam_api64/matchmaking never appeared -- is this the game process?");
     return 0;
