@@ -21,25 +21,11 @@
  *      patch_version_string     title -> "ReBalance <ver>"
  *      patch_yamamoto_selfcost  sublimation-Kikon 2-konpaku self-cost -> 0
  *      patch_byakuya_evo_icon   Pl22 stance icon kept visible in evo
- *      patch_aizen_kikon_counter  Kikon Counter costs 5 flames only  [DISABLED]
- *      patch_aizen_flamecost    Aizen SP1 costs 1 (base) / 3 (evo) flames [DISABLED]
+ *      patch_aizen_kikon_counter  Kikon Counter costs 5 flames only
+ *      patch_aizen_flamecost    Aizen SP1 costs 1 (base) / 3 (evo) flames
  *      patch_stage_new_id_gate  brand-new stage ids can load their geometry
  *  Rebuild with build_dinput8.bat and check patch_ranked.log for one line
  *  per patch. See the header of each patch_* function for its anchors.
- * ---------------------------------------------------------------------
- *  2026-08-06 CRASH HOTFIX. Both Aizen patches are DISABLED at build time
- *  (see the ENABLE_* flags below). Players reported Aizen crashing the game
- *  on Kikon, on the cocoon->evo transition, and when hit while holding 5
- *  flames. Cause (static analysis, see patch_aizen_flamecost's header):
- *  af_action_is() reads the action-name tsd::string 8 bytes below where it
- *  actually lives, so for any action name >= 16 characters it dereferences a
- *  non-pointer POD field as a char*. 68 of pl020's 211 action names are >= 16
- *  chars, and they are exactly the reported repros. patch_aizen_kikon_counter
- *  is disabled as a precaution only -- its three edits look mechanically safe
- *  but it also shipped for the first time in the crashing build and has never
- *  been playtested in this configuration. Re-enable it first when testing.
- *  NOT implicated: VERSION, SELFCOST (pl020 has no sp_break02 at all, so the
- *  selfcost lambda can never fire on Aizen), BYAKUYA_ICON, PART 2.
  * ===================================================================== */
 
 #include <windows.h>
@@ -51,11 +37,6 @@
 
 #define PATCH_ISSUER_DEFAULT 700001
 #define ENABLE_LOG 1
-
-/* ---- build-time patch switches (§9e: gate with a flag, never a commented
-   -out call, so the log always says what shipped) ---------------------- */
-#define ENABLE_AIZEN_KIKON_COUNTER 0   /* 2026-08-06: off, precaution (see header) */
-#define ENABLE_AIZEN_FLAMECOST     0   /* 2026-08-06: off, CRASHES (see header)    */
 
 /* ---------- shared helpers ------------------------------------------- */
 static void exe_dir_path(const char* name, char* out, size_t n)
@@ -427,53 +408,14 @@ static void patch_aizen_kikon_counter(void)
 }
 
 /* ================= Aizen (pl020) SP1 flame cost ======================
- *  !!! DISABLED 2026-08-06 -- THIS IS THE CRASH. Do not re-enable until the
- *  !!! two defects below are fixed AND it has been retested offline.
- *
- *  Intent: sp_atk01 consumes flames, 1 (base) / 3 (evo). SP2 untouched.
- *  We detour what was believed to be Aizen's per-frame unique-action handler
- *  (VA 0x140148970 / RVA 0x148970) and add an sp_atk01 branch.
+ *  sp_atk01 consumes flames: 1 (base) / 3 (evo). SP2 untouched.
+ *  We detour Aizen's own per-frame unique-action handler (VA 0x140148970 /
+ *  RVA 0x148970). It self-filters by action name; we add an sp_atk01 branch.
  *    combat  = [rcx+0x20];  char-id [combat+0xC00]==0x14 (20=Aizen)
  *    flames  = float [combat+0x1A34]      (0..5, confirmed via CE)
  *  Handler runs every frame -> edge-detect so we subtract once per activation.
- *
- *  DEFECT 1 (fatal) -- af_action_is() is reading 8 bytes too low.
- *  rdx is NOT the tsd::string; the string is a MEMBER at rdx+8. The game
- *  itself proves this twice:
- *      RVA 0x1489DE  mov r8,[rdi+0x20]      ; capacity
- *      RVA 0x1489E2  lea rax,[rdi+8]        ; &string   <-- +8, not +0
- *      RVA 0x1489E6  mov rcx,[rax+0x10]     ; length    = [rdi+0x18]
- *      RVA 0x1489F3  mov rdx,[rax]          ; data ptr  = [rdi+0x08]
- *      RVA 0x4225BC  lea rcx,[rbx+8] / mov rdx,[rcx+0x10] / cmp [rcx+0x18],0x10
- *  So the real layout relative to the pointer we are handed is
- *      +0x08 data-or-SSO-buffer, +0x18 length, +0x20 capacity.
- *  af_action_is() instead reads capacity from +0x18 (that is the LENGTH) and
- *  takes the string base from +0x00 (that is the record field BEFORE the
- *  string). Consequences:
- *    - name shorter than 16 chars -> it compares the 8 bytes preceding the
- *      string, so the flame cost NEVER fires. The feature has never worked.
- *    - name 16 chars or longer  -> it does *(const char**)(record+0) and
- *      dereferences it. record+0 is a plain POD scalar field, not a pointer
- *      (an 11 KB function that walks these 0x180-byte records --
- *      RVA 0x3FC6E0..0x3FF1F0 -- reads +0x18/+0x28/+0x48/+0x54/+0x88/+0x100/
- *      +0x13C.. and never once dereferences +0x00). Reading through it is an
- *      access violation unless the field happens to be 0.
- *  68 of pl020's 211 action names are >= 16 chars, including
- *  sp_break01_maxout(17), ct_sp_break01_maxout(20),
- *  evo_ct_sp_break01_maxout(24), evo_ct_revolut_rev(18) (cocoon -> evo),
- *  bind_dam_bind_loop(18) and neckbind_dam_*(24..31) -- i.e. every single
- *  reported repro. The handler self-filters on [combat+0xC00]==0x14 at RVA
- *  0x1489A2, which is why ONLY Aizen crashes.
- *
- *  DEFECT 2 (why it was never noticed) -- wrong anchor. RVA 0x148970 is not
- *  the SP1 handler. It compares the action name against "sp_atk02" (RVA
- *  0x1489FC) and "evo_sp_atk02" (RVA 0x148A1E) -- it is the SP2 handler. It
- *  has exactly one caller (RVA 0x422594) and is in no vtable.
- *
- *  Minor: the hook reads [rcx+0x20] and [combat+0xC00] before the original's
- *  own guards ([rcx+0x40] non-null, [r8+8] non-zero) have run, so it also
- *  touches the object in states the game treats as not-yet-valid.
- *
+ *  The char-id test inside the hook is what makes this Pl20-only, so it is
+ *  safe even if the handler is ever shared.
  *  Anchors + derivation: Patched Aizen/V6/. */
 #define AIZEN_UNIQ_RVA   0x148970
 #define AIZEN_CHARID_OFF 0xC00
@@ -656,19 +598,8 @@ static DWORD WINAPI worker(LPVOID u)
        dev->live push silently removes Byakuya's evo icon (which is exactly how
        it went missing once already). */
     patch_byakuya_evo_icon();
-    /* Both Aizen patches are switched off for the 2026-08-06 crash hotfix.
-       Flip the ENABLE_* defines at the top of this file to bring them back --
-       do NOT delete the calls, the log line has to keep telling us which of
-       the two configurations a player is running. */
-    /* plain `if` on a 0/1 macro, not #if, so both functions stay referenced
-       (they keep compiling, and -O2 drops the dead one from the binary). */
-    if (ENABLE_AIZEN_KIKON_COUNTER) patch_aizen_kikon_counter();
-    else log_line("AIZEN_COUNTER: DISABLED at build time (2026-08-06 crash hotfix, "
-                  "precaution) -- reverse gauge requirement and cost unchanged");
-    if (ENABLE_AIZEN_FLAMECOST) patch_aizen_flamecost();
-    else log_line("AIZEN_FLAME: DISABLED at build time (2026-08-06 crash hotfix) -- "
-                  "af_action_is() reads the action-name string 8 bytes low and "
-                  "dereferences a non-pointer for any name >= 16 chars");
+    patch_aizen_kikon_counter();
+    patch_aizen_flamecost();
     patch_stage_new_id_gate();
     for (int i=0;i<600;i++){ int r=try_install(); if(r==1)return 0; if(r<0)return 0; Sleep(500); }
     log_line("ERROR: steam_api64/matchmaking never appeared -- is this the game process?");
