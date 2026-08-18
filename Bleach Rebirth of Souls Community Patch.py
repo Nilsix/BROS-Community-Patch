@@ -1,11 +1,11 @@
-from tkinter import * 
+from tkinter import *
 from tkinter import messagebox
 from tkinter import filedialog
 from tkinter import ttk
 import json
 import shutil
 import os
-import subprocess   
+import subprocess
 import platform
 try :
     import ctypes
@@ -20,7 +20,7 @@ import webbrowser
 from pathlib import Path
 
 try:
-    import requests 
+    import requests
 except:
     pass
 try:
@@ -28,7 +28,7 @@ try:
 except:
     pass
 
-try: 
+try:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     print("Checking for updates, please wait")
 
@@ -51,7 +51,7 @@ try:
             return result.stdout.strip()
         except Exception:
             return "unknown"
-    
+
     def get_latest():
         """Short commit hash of origin/main (the newest pushed build). Does a
         quiet fetch so it is accurate even for DevToken users who skip the
@@ -85,7 +85,7 @@ try:
         output = result.stdout.strip()
         if "Already up to date." in output:
             pass
-        
+
         #if there is an update, will relaunch the launcher so the code actually gets reset too
         else:
             pass
@@ -106,7 +106,7 @@ try:
         print("Please relaunch the installer script, while installing make sure to wait for the installer window to close itself, DO NOT close it yourself please")
         a = input("Press Enter to exit ")
         exit()
-    
+
     def refresh_launcher():
         subprocess.run(os.path.join(BASE_DIR,"Bleach Rebirth of Souls Community Patch.py"),shell=True)
         try :
@@ -114,7 +114,7 @@ try:
         except:
             pass
         exit()
-    
+
     def open_file(path):
         if platform.system() == "Windows":
             os.startfile(path)
@@ -122,7 +122,7 @@ try:
             subprocess.run(["open", path])
         else:
             subprocess.run(["xdg-open", path])
-   
+
     template_path = os.path.join(BASE_DIR,"Json","configTemplate.json")
     config_path = os.path.join(BASE_DIR,"Json","config.json")
     admin_config_path = None
@@ -132,7 +132,7 @@ try:
             admin_config_path = os.path.join(BASE_DIR,"adminConfig.json")
     except:
         admin_config_path = None
-    
+
     if not os.path.exists(config_path):
         shutil.copy(template_path,config_path)
     else:
@@ -148,12 +148,12 @@ try:
         config = json.load(f)
 
     admin_config = None
-    
+
     if admin_config_path is not None:
         with open(admin_config_path, "r") as f:
             admin_config = json.load(f)
-    
-    
+
+
     def saveJson():
         with open(config_path,"w") as f:
             json.dump(config,f)
@@ -161,22 +161,22 @@ try:
     VERSION_STRING = f"{get_snapshot()}"
     if admin_config_path != None:
         try:
-            if VERSION_STRING != admin_config["VERSION"] : 
+            if VERSION_STRING != admin_config["VERSION"] :
                 admin_config["VERSION"] = VERSION_STRING
                 with open(admin_config_path,"w") as f:
                     json.dump(admin_config,f)
 
                 hash = hashlib.sha256(admin_config["HASH_VALUE"].encode()).hexdigest()
-                
+
                 if admin_config["ADMIN_ID"] == hash:
                     webhook_url = "https://discord.com/api/webhooks/1522537997751549972/AUYztUb1AS77vhsc6ERfeRYE9kNu0KLfem8HP9CGQDVe0lrkOeNarf8VlPGbrAyj-jeZ"
-                    try : 
+                    try :
                         requests.post(webhook_url, json={"content": "Launcher latest version : " + VERSION_STRING})
                     except:
                         pass
         except:
             pass
-       
+
 
     # DPI-aware BEFORE creating the window, so text renders crisp at the monitor's
     # native resolution instead of Windows bitmap-stretching it (that stretch is
@@ -196,19 +196,52 @@ try:
     window.title("Bleach Community Patch")
     try: window.iconbitmap(os.path.join(BASE_DIR,"ressources/pimplin.ico"))
     except Exception: pass
-    #minimum size of the window
-    window.minsize(600,400)
-    # Final size is computed at the very end by fit_window(), after every widget
-    # exists: the window is sized to exactly fit its content (capped to the
-    # screen) and centred -- crisp at native DPI, nothing cut off, no resizing.
-    bgcolor = "#4A1942"
-    labelcolor = "#D9B8D4"
+
+    # ── Palette ──────────────────────────────────────────────────────────────
+    # Deep aubergine base with a soul-reaper gold accent for primary actions.
+    # bgcolor/labelcolor kept as names since a few widgets below still read them.
+    bgcolor        = "#1c0e23"   # window / page background
+    PANEL          = "#2a1734"   # card background
+    PANEL_SOFT     = "#241330"   # slightly softer panel (chips)
+    BORDER         = "#43284f"   # card / divider border
+    labelcolor     = "#efe1f4"   # main light text
+    TEXT_MUTED     = "#b79bc4"   # secondary / subtitle text
+    ACCENT         = "#e9c9f2"   # heading accent (lilac)
+    GOLD           = "#e3b34f"   # primary CTA
+    GOLD_HOVER     = "#f0c568"
+    GOLD_DARK      = "#a97f2e"
+    BTN_BG         = "#3a2144"   # secondary button
+    BTN_BG_HOVER   = "#4c2c59"
+    BTN_FG         = "#f1e4f5"
+    GREEN_OK       = "#7dd292"
+    GRAY_OFFLINE   = "#8b7a94"
+
     window.config(background=bgcolor)
     gameMode = "DEFAULT"
 
-    # ── Hover helpers ──────────────────────────────────────────────────────────
-    HOVER_BG   = "#F5D6F0"   # light lilac highlight on mouse-over
-    NORMAL_BG  = "white"
+    # ── Fonts ────────────────────────────────────────────────────────────────
+    FONT_TITLE    = ("Segoe UI", 18, "bold")
+    FONT_SUBTITLE = ("Segoe UI", 10, "italic")
+    FONT_SECTION  = ("Segoe UI", 9, "bold")
+    FONT_BODY     = ("Segoe UI", 10)
+    FONT_SMALL    = ("Segoe UI", 9)
+    FONT_MONO     = ("Consolas", 9)
+    FONT_COMBO    = ("Segoe UI", 12, "bold")
+
+    #minimum size of the window
+    window.minsize(560,420)
+    # Final size is computed at the very end by fit_window(), after every widget
+    # exists: the window is sized to exactly fit its content (capped to the
+    # screen) and centred -- crisp at native DPI, nothing cut off, no resizing.
+
+    # ── UI helpers ───────────────────────────────────────────────────────────
+    def _blend(c1, c2, t):
+        """Linear-interpolate between two '#rrggbb' colours (t in [0,1])."""
+        c1 = c1.lstrip('#'); c2 = c2.lstrip('#')
+        r1, g1, b1 = int(c1[0:2],16), int(c1[2:4],16), int(c1[4:6],16)
+        r2, g2, b2 = int(c2[0:2],16), int(c2[2:4],16), int(c2[4:6],16)
+        r = int(r1 + (r2-r1)*t); g = int(g1 + (g2-g1)*t); b = int(b1 + (b2-b1)*t)
+        return f"#{r:02x}{g:02x}{b:02x}"
 
     class Tooltip:
         """Small pop-up label that appears after the mouse rests on a widget."""
@@ -242,32 +275,94 @@ try:
             tw.wm_overrideredirect(True)          # no title bar / borders
             tw.wm_geometry(f"+{x}+{y}")
             tw.attributes("-topmost", True)
+            frame = Frame(tw, bg=GOLD_DARK)
+            frame.pack()
             lbl = Label(
-                tw, text=self.text,
-                background="#FFFBCC", foreground="#222222",
-                relief="solid", borderwidth=1,
-                font=("Segoe UI", 10), padx=6, pady=3
+                frame, text=self.text, wraplength=320, justify="left",
+                background=PANEL, foreground=labelcolor,
+                font=FONT_SMALL, padx=8, pady=5
             )
-            lbl.pack()
+            lbl.pack(padx=1, pady=1)
 
         def _hide(self):
             if self._tip_wnd:
                 self._tip_wnd.destroy()
                 self._tip_wnd = None
 
-    def add_hover(btn, tooltip_text=""):
-        """Attach a light-up hover colour and an optional tooltip to a Button."""
-        btn.bind("<Enter>", lambda e: btn.config(bg=HOVER_BG), add="+")
-        btn.bind("<Leave>", lambda e: btn.config(bg=NORMAL_BG), add="+")
-        if tooltip_text:
-            Tooltip(btn, tooltip_text)
+    def set_toggle_visual(btn, is_on):
+        """Give a toggle button a gold glow border when its feature is ON."""
+        col = GOLD if is_on else BORDER
+        btn.config(highlightbackground=col, highlightcolor=col)
+
+    def mkbutton(parent, text, command, kind="secondary", icon="", tooltip=""):
+        """Flat, themed button factory. kind: 'primary' (gold CTA),
+        'secondary' (card button) or 'ghost' (back / nav button)."""
+        styles = {
+            "primary":   dict(bg=GOLD,   hover=GOLD_HOVER,   fg="#241129", border=GOLD_DARK, anchor="center", font=FONT_COMBO),
+            "secondary": dict(bg=BTN_BG, hover=BTN_BG_HOVER, fg=BTN_FG,    border=BORDER,     anchor="w",      font=FONT_BODY),
+            "ghost":     dict(bg=PANEL_SOFT, hover=BTN_BG_HOVER, fg=TEXT_MUTED, border=BORDER, anchor="center", font=FONT_BODY),
+        }[kind]
+        label = f"{icon}   {text}" if icon else text
+        btn = Button(
+            parent, text=label, font=styles["font"], command=command,
+            bg=styles["bg"], fg=styles["fg"],
+            activebackground=styles["hover"], activeforeground=styles["fg"],
+            disabledforeground=TEXT_MUTED,
+            relief=FLAT, bd=0, cursor="hand2",
+            padx=12, pady=6, anchor=styles["anchor"],
+            highlightthickness=1, highlightbackground=styles["border"], highlightcolor=styles["border"]
+        )
+        btn.bind("<Enter>", lambda e: btn.config(bg=styles["hover"]), add="+")
+        btn.bind("<Leave>", lambda e: btn.config(bg=styles["bg"]),   add="+")
+        if tooltip:
+            Tooltip(btn, tooltip)
+        return btn
+
+    def build_header(parent, icon="⚔"):
+        """Title + subtitle + a soft fading divider, shared by every page."""
+        head = Frame(parent, bg=bgcolor)
+        Label(head, text=f"{icon}  Bleach Rebirth of Souls community patch launcher",
+              font=FONT_TITLE, bg=bgcolor, fg=ACCENT, wraplength=480, justify="center").pack(pady=(0,0))
+        Label(head, text="made by Nilsix :3", font=FONT_SUBTITLE, bg=bgcolor, fg=TEXT_MUTED).pack(pady=(1,5))
+        divider_w = 380
+        c = Canvas(head, width=divider_w, height=2, bg=bgcolor, highlightthickness=0)
+        mid = divider_w / 2
+        for x in range(0, divider_w, 2):
+            t = max(0.0, 1 - abs(x - mid) / mid)
+            c.create_line(x, 0, x, 2, fill=_blend(bgcolor, GOLD, t))
+        c.pack(pady=(0,6))
+        return head
+
+    def make_card(parent, title=None):
+        """A bordered panel used to group related buttons, with an optional
+        small caps section title. Returns (outer_frame_to_pack, inner_frame_to_fill)."""
+        outer = Frame(parent, bg=BORDER)
+        inner = Frame(outer, bg=PANEL, padx=11, pady=7)
+        inner.pack(fill=BOTH, expand=YES, padx=1, pady=1)
+        if title:
+            Label(inner, text=title.upper(), font=FONT_SECTION, bg=PANEL, fg=GOLD)\
+                .pack(anchor="w", pady=(0,4))
+        return outer, inner
+
+    def make_pill(parent, dot_color, text, tooltip):
+        """A small rounded status chip: coloured dot + text."""
+        outer = Frame(parent, bg=BORDER)
+        inner = Frame(outer, bg=PANEL_SOFT, padx=8, pady=3)
+        inner.pack(padx=1, pady=1)
+        dot = Canvas(inner, width=10, height=10, bg=PANEL_SOFT, highlightthickness=0)
+        dot.create_oval(1,1,9,9, fill=dot_color, outline="")
+        dot.pack(side=LEFT, padx=(0,7))
+        lbl = Label(inner, text=text, font=FONT_MONO, bg=PANEL_SOFT, fg=labelcolor)
+        lbl.pack(side=LEFT)
+        Tooltip(outer, tooltip); Tooltip(inner, tooltip); Tooltip(lbl, tooltip)
+        return outer
     # ──────────────────────────────────────────────────────────────────────────
-     
-    
+
+
 
     ressourcesPath = os.path.join(BASE_DIR,"ressources")
     launcherOstPath = os.path.join(ressourcesPath,"LauncherOst.wav")
-    
+
     try:
         winsound.PlaySound(launcherOstPath,winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_LOOP)
     except:
@@ -279,10 +374,10 @@ try:
         while(flag):
             messagebox.showinfo("Bleach not found","BLEACH_Rebirth_of_Souls.exe not found. You can find it in your steam folder, press ok then select it")
             game_path = filedialog.askopenfilename(title="Select Bleach rebirth of souls",filetypes=[("Executable files", "*.exe")])
-            
+
             if game_path == "":
                 exit()
-            
+
             if"BLEACH_Rebirth_of_Souls.exe" in game_path:
                 flag = False
 
@@ -292,12 +387,12 @@ try:
         with open(config_path, "w") as f:
             json.dump(config, f)
 
-   
+
 
     def injectFolder(files,folderName,fullFolder=True):
             folder_src = os.path.join(BASE_DIR,"GameVersions",f"{files}",f'{folderName}')
             folder_dst = os.path.join(game_path,f'{folderName}')
-            
+
             if fullFolder:
                 try:
                     subprocess.run(["robocopy",folder_src,folder_dst,"/MIR"],capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW)
@@ -306,7 +401,7 @@ try:
                     shutil.copytree(folder_src, folder_dst)
             else:
                 shutil.copytree(folder_src, folder_dst,dirs_exist_ok=True)
-    
+
     def injectEffects(files,effectFolder):
         effect_src = os.path.join(BASE_DIR,"GameVersions",f"{files}",f'{effectFolder}',"Effect","spfx","com")
         effect_dst = os.path.join(game_path,f'{effectFolder}',"Effect","spfx","com")
@@ -316,7 +411,7 @@ try:
             shutil.rmtree(effect_dst)
             shutil.copytree(effect_src, effect_dst)
 
-            
+
 
     def injectPerformanceFiles(folderName,lowspecmodornot):
         try:
@@ -326,7 +421,7 @@ try:
                             os.path.join(game_path,"01MIDDLE","Effect","spfx","com"),dirs_exist_ok=True)
         except Exception as e:
             print(f"Error injecting performance files: {e}")
-    
+
     def repair():
         messagebox.showinfo("Repair", "Please select the BLEACH_Rebirth_of_Souls.exe file from a clean backup folder of the game (your backup folder, not your main Bros folder)")
         repair_game_path = ""
@@ -346,31 +441,31 @@ try:
                         messagebox.showerror("Error", "You selected the same folder as your main game folder. Please select a backup folder.")
                     else:
                         flag = False
-                else : 
+                else :
                     messagebox.showerror("Error", "You did not select the correct file. Please select the BLEACH_Rebirth_of_Souls.exe file of your backup folder")
-        
-       
+
+
         messagebox.showinfo("Repair", "Repairing files. Please wait")
         repairPage.tkraise()
         window.update()
-        
+
         repairWaitOstPath = os.path.join(BASE_DIR,"ressources","RepairWaitOst.wav")
         repairEndOstPath = os.path.join(BASE_DIR,"ressources","RepairEndOst.wav")
-        
-        
+
+
         try:
             winsound.PlaySound(None, winsound.SND_PURGE)
             winsound.PlaySound(repairWaitOstPath, winsound.SND_ASYNC | winsound.SND_LOOP)
         except:
             pass
-        
+
         try:
             subprocess.run([
                 "robocopy", repair_game_path, game_path, "/E", "/XO"
             ], capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW)
         except:
             shutil.copytree(repair_game_path, game_path, dirs_exist_ok=True)
-       
+
         try:
             winsound.PlaySound(None, winsound.SND_PURGE)
             winsound.PlaySound(repairEndOstPath, winsound.SND_ASYNC)
@@ -379,7 +474,7 @@ try:
         messagebox.showinfo("Repair", "Files repaired successfully!")
         backToMainMenu()
         launcherOstPath = os.path.join(BASE_DIR,"ressources","LauncherOst.wav")
-        
+
         try:
             winsound.PlaySound(None, winsound.SND_PURGE)
             winsound.PlaySound(launcherOstPath, winsound.SND_ASYNC | winsound.SND_LOOP)
@@ -466,7 +561,7 @@ try:
             #ostFolder = ""
                 #if config["OST_MOD"] == "ON":
                     #ostFolder = "Mod"
-                #else : 
+                #else :
                     #ostFolder = "Default"
                 #ostPath = os.path.join(BASE_DIR,"Files","OST",f"{ostFolder}","bgm.bnk")
                 #if os.path.exists(ostPath):
@@ -475,51 +570,51 @@ try:
                         #os.path.join(game_path, "Sound")
                     #)
 
-        
+
             #Performance Mode injection
             shutil.copytree(os.path.join(BASE_DIR,"Files","Spec Mod",'reverse_globe',f'{config["reverse_globe"]}',"high"),
                         os.path.join(game_path,"00HIGH","Effect","spfx","com"),dirs_exist_ok=True)
-        
+
             shutil.copytree(os.path.join(BASE_DIR,"Files","Spec Mod",'reverse_globe',f'{config["reverse_globe"]}',"middle"),
                         os.path.join(game_path,"01MIDDLE","Effect","spfx","com"),dirs_exist_ok=True)
-            
+
             for folder in os.listdir(os.path.join(BASE_DIR,"Files","Spec Mod")):
                 if folder != "reverse_globe":
                     injectPerformanceFiles(folder,config[folder])
-        
+
             reworkPath = os.path.join(BASE_DIR,"Reworks")
             for rework in reworks:
                 if rework != "OFF":
                     scriptPath = os.path.join(reworkPath,rework,"Script")
                     motionPath = os.path.join(reworkPath,rework,"Motion")
-                
+
                     if os.path.exists(scriptPath):
                         shutil.copytree(scriptPath,os.path.join(game_path,"Script"),dirs_exist_ok=True)
                     if os.path.exists(motionPath):
                         shutil.copytree(motionPath,os.path.join(game_path,"Motion"),dirs_exist_ok=True)
-                
+
 
             #gamemode injection
             if gameMode != "DEFAULT":
                 srcPath = os.path.join(BASE_DIR,"GameModes",f"{gameMode}","Script")
                 dstPath = os.path.join(game_path,"Script")
-            
-            
+
+
                 shutil.copytree(srcPath, dstPath, dirs_exist_ok=True)
                 srcPath = os.path.join(BASE_DIR,"GameModes",f"{gameMode}","Script")
                 dstPath = os.path.join(game_path,"Script")
-            
+
                 shutil.copytree(srcPath, dstPath, dirs_exist_ok=True)
 
-            
+
             #team battle injection
             if config["TEAM_BATTLE"] == "ON":
                 srcPath = os.path.join(BASE_DIR,"GameModes","TeamBattle")
-                dstPath = os.path.join(game_path,"Script")   
+                dstPath = os.path.join(game_path,"Script")
                 shutil.copy(
                     os.path.join(srcPath,"CharaStatus.fsv"),
                     os.path.join(dstPath,"CharaStatus.fsv"))
-            
+
 
             forlater = """
             else:
@@ -565,18 +660,18 @@ try:
             return
 
         window.destroy()
-        
-        
+
+
 
     def readBalanceChanges():
         webbrowser.open("https://rebalance-of-souls.github.io/reBalanceOfSouls.github.io/")
         latestChangesPath = os.path.join(BASE_DIR,"BalanceChanges","LatestChanges.txt")
-       
+
         try:
             open_file(latestChangesPath)
         except:
             print("Error opening LatestChanges.txt")
-    
+
     def readCredits():
         creditsFile = os.path.join(BASE_DIR,"Credits","credits.txt")
         if os.path.exists(creditsFile):
@@ -598,7 +693,7 @@ try:
             elif firstTime:
                 firstTime = False
                 messagebox.showerror("Error","BLEACH_Rebirth_of_Souls.exe not found")
-                
+
 
         parent_dir = os.path.dirname(game_path)
         game_path = str(parent_dir)
@@ -606,85 +701,84 @@ try:
 
         with open(config_path, "w") as f:
             json.dump(config, f)
-            
-        labelGamePath.config(text=f'Current game path : {game_path}')
-        
-   
+
+        labelGamePath.config(text=f'📁  Current game path : {game_path}')
+
+
     def gameModesMenu():
         gameModesPage.tkraise()
 
-    
+
 
     #box
     container = Frame(window, bg=bgcolor)
-    container.pack(expand=YES, fill=BOTH, padx=60, pady=6)
+    container.pack(expand=YES, fill=BOTH, padx=34, pady=6)
     mainPage = Frame(container,bg=bgcolor)
     settingsPage = Frame(container,bg=bgcolor)
     gameModesPage = Frame(container,bg=bgcolor)
     repairPage = Frame(container,bg=bgcolor)
     reworksPage = Frame(container,bg=bgcolor)
 
-    
 
-    titleText = "Bleach Rebirth of Souls community patch launcher"
-    subTitleText = "made by Nilsix :3"
-    #labels
-    labelTitle = Label(mainPage, text=titleText, font=("Arial",30),bg=bgcolor,fg=labelcolor)
-    labelSubTitle = Label(mainPage,text=subTitleText,font=("Courrier",20),bg=bgcolor,fg=labelcolor)
-    labelTitleSettings = Label(settingsPage, text=titleText, font=("Arial",30),bg=bgcolor,fg=labelcolor)
-    labelSubTitleSettings = Label(settingsPage,text=subTitleText,font=("Courrier",20),bg=bgcolor,fg=labelcolor)
-    labelTitleGameModes = Label(gameModesPage, text=titleText, font=("Arial",30),bg=bgcolor,fg=labelcolor)
-    labelSubTitleGameModes = Label(gameModesPage,text=subTitleText,font=("Courrier",20),bg=bgcolor,fg=labelcolor)
-    labelTitleRepair = Label(repairPage, text=titleText, font=("Arial",30),bg=bgcolor,fg=labelcolor)
-    labelSubTitleRepair = Label(repairPage,text=subTitleText,font=("Courrier",20),bg=bgcolor,fg=labelcolor)
-    labelRepairText = Label(repairPage,text="Repairing Files",font=("Courrier",15),bg=bgcolor,fg=labelcolor)
-    labelTitleReworks = Label(reworksPage, text=titleText, font=("Arial",30),bg=bgcolor,fg=labelcolor)
-    labelSubTitleReworks = Label(reworksPage,text=subTitleText,font=("Courrier",20),bg=bgcolor,fg=labelcolor)
-    labelWarning = Label(mainPage, text="Warning : Please only use the non vanilla features in room matches online, not in casual or ranked matches",font=("Courrier",15),bg=bgcolor,fg=labelcolor)
-    labelGamePath = Label(mainPage,text=f'Current game path : {game_path}',font=("Courrier",15),bg=bgcolor,fg=labelcolor)
-    # Version panel. Each underlined term shows a short explanation on hover
-    # (reuses the Tooltip class) so the numbers aren't confusing.
+
+    #headers (title / subtitle / fading divider), shared component per page
+    build_header(mainPage).pack()
+    build_header(settingsPage, icon="⚙").pack()
+    build_header(gameModesPage, icon="🎮").pack()
+    build_header(repairPage, icon="🛠").pack()
+    build_header(reworksPage, icon="✨").pack()
+
+    labelWarning = Label(mainPage, text="Warning : Please only use the non vanilla features in room matches online, not in casual or ranked matches",font=FONT_SMALL,bg=bgcolor,fg=TEXT_MUTED)
+
+    # Version panel: two small status pills. Each shows a short explanation on
+    # hover (reuses the Tooltip class) so the numbers aren't confusing.
     LATEST_STRING = get_latest()
     _have_latest  = LATEST_STRING not in ("", "unknown")
     _up_to_date   = _have_latest and (VERSION_STRING == LATEST_STRING)
 
     versionPanel = Frame(mainPage, bg=bgcolor)
-    def _term(parent, text, tip):
-        lbl = Label(parent, text=text, font=("Courrier",12,"underline"),
-                    bg=bgcolor, fg="#F3CDEC", cursor="question_arrow")
-        Tooltip(lbl, tip)
-        return lbl
-    def _val(parent, text, fg=labelcolor):
-        return Label(parent, text=text, font=("Courrier",12), bg=bgcolor, fg=fg)
 
     _status1 = "(up to date)" if _up_to_date else ("(update available - relaunch)" if _have_latest else "(offline)")
-    _term(versionPanel, "Current version",
-          "The patch build you have installed right now (short git commit hash).").grid(row=0,column=0,sticky="e",pady=1)
-    _val(versionPanel, f" : {VERSION_STRING}").grid(row=0,column=1,sticky="w",padx=(0,22))
-    _term(versionPanel, "Latest version",
-          "The newest patch build published on GitHub. If it differs from Current, an update is available - relaunch to get it.").grid(row=0,column=2,sticky="e",pady=1)
-    _val(versionPanel, f" : {LATEST_STRING}  {_status1}",
-         fg=(labelcolor if (_up_to_date or not _have_latest) else "#FFD27F")).grid(row=0,column=3,sticky="w")
+    _status_dot = GREEN_OK if _up_to_date else (GOLD if _have_latest else GRAY_OFFLINE)
+
+    make_pill(versionPanel, GOLD if True else GOLD, f"Current : {VERSION_STRING}",
+              "The patch build you have installed right now (short git commit hash).")\
+        .pack(side=LEFT, padx=(0,10))
+    make_pill(versionPanel, _status_dot, f"Latest : {LATEST_STRING}  {_status1}",
+              "The newest patch build published on GitHub. If it differs from Current, an update is available - relaunch to get it.")\
+        .pack(side=LEFT)
 
     brosVersion = StringVar()
     gameVersionsList = []
     gameVersionsPath = os.path.join(BASE_DIR,"GameVersions")
     for folder in os.listdir(gameVersionsPath):
         gameVersionsList.append(folder)
-    brosVersionList = ttk.Combobox(
-        mainPage,
-        textvariable=brosVersion,
-        values=gameVersionsList,
-        state="readonly",
-        font=("Courrier",25)
-    )
 
-    brosVersionList.set("Choose a game version")
+    # Themed combobox (dark, matches the rest of the UI) -- 'clam' is the only
+    # built-in ttk theme that lets us restyle field/background colours on Windows.
+    _style = ttk.Style()
+    try:
+        _style.theme_use("clam")
+    except Exception:
+        pass
+    _style.configure("Bros.TCombobox",
+                      fieldbackground=PANEL_SOFT, background=PANEL_SOFT,
+                      foreground=labelcolor, arrowcolor=GOLD,
+                      bordercolor=BORDER, lightcolor=PANEL_SOFT, darkcolor=PANEL_SOFT,
+                      padding=8)
+    _style.map("Bros.TCombobox",
+               fieldbackground=[("readonly", PANEL_SOFT)],
+               foreground=[("readonly", labelcolor)],
+               background=[("readonly", PANEL_SOFT)])
+    window.option_add("*TCombobox*Listbox.background", PANEL_SOFT)
+    window.option_add("*TCombobox*Listbox.foreground", labelcolor)
+    window.option_add("*TCombobox*Listbox.selectBackground", BTN_BG_HOVER)
+    window.option_add("*TCombobox*Listbox.font", FONT_BODY)
 
     def preLauncher():
         if brosVersionList.get() != "Choose a game version":
             launch(brosVersionList.get())
-        
+
     def performanceSettingsMenu():
         settingsPage.tkraise()
 
@@ -693,51 +787,63 @@ try:
             config["awakeningaura"] = "lowspec"
         else:
             config["awakeningaura"] = "original"
+        _on = config["awakeningaura"] != "original"
         awakeningAuraButton.config(text=f'remove awakening aura : currently {"OFF" if config["awakeningaura"] == "original" else "ON"}')
-        
-    
+        set_toggle_visual(awakeningAuraButton, _on)
+
+
     def adjustBreakerGrabSettings():
         if config["breaker_grab"] == "original":
             config["breaker_grab"] = "lowspec"
         else:
             config["breaker_grab"] = "original"
 
+        _on = config["breaker_grab"] != "original"
         breakerGrabButton.config(
             text=f'remove breaker grab effect : currently {"OFF" if config["breaker_grab"] == "original" else "ON"}'
         )
-        
+        set_toggle_visual(breakerGrabButton, _on)
+
 
     def adjustHakugekiSettings():
         if config["hakugeki"] == "original":
             config["hakugeki"] = "lowspec"
         else:
             config["hakugeki"] = "original"
+        _on = config["hakugeki"] != "original"
         hakugekiButton.config(text=f'remove hakugeki effect : currently {"OFF" if config["hakugeki"] == "original" else "ON"}')
-        
-    
+        set_toggle_visual(hakugekiButton, _on)
+
+
     def adjustHitEffectSettings():
         if config["hit"] == "original":
             config["hit"] = "lowspec"
         else:
             config["hit"] = "original"
-        hitEffectButton.config(text=f'remove hit effect : currently {"OFF" if config["hit"] == "original" else "ON"}')  
-        
-    
+        _on = config["hit"] != "original"
+        hitEffectButton.config(text=f'remove hit effect : currently {"OFF" if config["hit"] == "original" else "ON"}')
+        set_toggle_visual(hitEffectButton, _on)
+
+
     def adjustReverseGlobeSettings():
         if config["reverse_globe"] == "original":
             config["reverse_globe"] = "lowspec"
         else:
             config["reverse_globe"] = "original"
-        reverseGlobeButton.config(text=f'remove reverse globe effect : currently {"OFF" if config["reverse_globe"] == "original" else "ON"}')  
-        
-    
+        _on = config["reverse_globe"] != "original"
+        reverseGlobeButton.config(text=f'remove reverse globe effect : currently {"OFF" if config["reverse_globe"] == "original" else "ON"}')
+        set_toggle_visual(reverseGlobeButton, _on)
+
+
     def adjustSkillActivationSettings():
         if config["skill_activation"] == "original":
             config["skill_activation"] = "lowspec"
         else:
             config["skill_activation"] = "original"
-        skillActivationButton.config(text=f'remove skill activation effect : currently {"OFF" if config["skill_activation"] == "original" else "ON"}')  
-        
+        _on = config["skill_activation"] != "original"
+        skillActivationButton.config(text=f'remove skill activation effect : currently {"OFF" if config["skill_activation"] == "original" else "ON"}')
+        set_toggle_visual(skillActivationButton, _on)
+
 
     def backToMainMenu():
         saveJson()
@@ -750,7 +856,7 @@ try:
         else:
             gameMode = "BaseOnly"
         actualiseGameModeButtons()
-    
+
     def teamBattleFunc():
         if not os.path.exists(os.path.join(BASE_DIR,"GameModes","TeamBattle","TokenOpen.txt")):
             config["TEAM_BATTLE"] = "OFF"
@@ -760,7 +866,8 @@ try:
         config["TEAM_BATTLE"] = "ON" if config["TEAM_BATTLE"] == "OFF" else "OFF"
         saveJson()
         teamBattleButton.config(text=f'Team Battle : (Currently {"ON" if config["TEAM_BATTLE"] == "ON" else "OFF"})')
-    
+        set_toggle_visual(teamBattleButton, config["TEAM_BATTLE"] == "ON")
+
     def instantEvoAndSublimationFunc():
         global gameMode
         if gameMode == "InstantEvoAndSublimation":
@@ -768,7 +875,7 @@ try:
         else:
             gameMode = "InstantEvoAndSublimation"
         actualiseGameModeButtons()
-    
+
     def eightKonpakusFunc():
         global gameMode
         if gameMode == "EightKonpakus":
@@ -799,7 +906,12 @@ try:
         eightKonpakus.config(text=f'8 Konpakus : (Currently {"ON" if gameMode == "EightKonpakus" else "OFF"})')
         extraKonpaku.config(text=f'Extra Konpaku : (Currently {"ON" if gameMode == "ExtraKonpaku" else "OFF"})')
         suddenDeath.config(text=f'Sudden Death : (Currently {"ON" if gameMode == "SuddenDeath" else "OFF"})')
-    
+        set_toggle_visual(baseOnlyButton, gameMode == "BaseOnly")
+        set_toggle_visual(instantEvoAndSublimation, gameMode == "InstantEvoAndSublimation")
+        set_toggle_visual(eightKonpakus, gameMode == "EightKonpakus")
+        set_toggle_visual(extraKonpaku, gameMode == "ExtraKonpaku")
+        set_toggle_visual(suddenDeath, gameMode == "SuddenDeath")
+
     def unlockDangaiIchigo():
         result = messagebox.askyesno("Unlock Dangai Ichigo", "Unlocking Dangai Ichigo this way will reset your settings and ranked progress , are you sure you want to continue?")
         theDangaiFiles = os.path.join(BASE_DIR,"ressources","savedata.bin")
@@ -815,17 +927,17 @@ try:
             # Copy the dangai files to the save data path
             #shutil.copy2(theDangaiFiles, saveDataPath)
             messagebox.showinfo("Dangai Ichigo unlocked", "Dangai Ichigo unlocked successfully!")
-    
+
     def refreshLauncher():
         result = pulling_from_git()
         if result.returncode == 0:
             messagebox.showinfo("Refresh", "Launcher refreshed successfully!")
         else:
             messagebox.showerror("Refresh", f"Error refreshing launcher: {result.stderr}")
-    
+
     def reworksMenu():
         reworksPage.tkraise()
-   
+
     def byakuyaReworkToggle():
         global reworks
         if reworks[0] == "OFF":
@@ -833,257 +945,214 @@ try:
         else:
             reworks[0] = "OFF"
         reworksByakuyaButton.config(text=f'Byakuya Rework : {"ON" if reworks[0] == "Byakuya" else "OFF"}')
+        set_toggle_visual(reworksByakuyaButton, reworks[0] == "Byakuya")
 
-    textSize = 12
-    paddingYvalue = 5
-    #buttons
-    launchButton = Button(mainPage,text="Launch the game",font=("Courrier",textSize),bg="white",fg=bgcolor,command=preLauncher)
-    joinDiscordButton = Button(mainPage,text="Join our discord :) ",font=("Courrier",textSize),command=lambda : webbrowser.open("https://discord.gg/fSbsZE3qSZ"))
-    changeGamePathButton =  Button(mainPage,text=f'Change your game path',font=("Courrier",textSize),bg="white",fg=bgcolor,command=changeGamePath)
-    readBalanceChangesButton =  Button(mainPage,text=f'Read balance changes',font=("Courrier",textSize),bg="white",fg=bgcolor,command=readBalanceChanges)
-    lowSpecButton =  Button(mainPage,text=f'FPS Booster settings',font=("Courrier",textSize),bg="white",fg=bgcolor,command=performanceSettingsMenu)
-    CreditsButton = Button(mainPage,text="Credits",font=("Courrier",textSize),bg="white",fg=bgcolor,command=readCredits)
-    gameModesButton = Button(mainPage,text="Game Modes",font=("Courrier",textSize),bg="white",fg=bgcolor,command=gameModesMenu)
-    unlockDangaiIchigoButton = Button(mainPage,text="Unlock Dangai Ichigo",font=("Courrier",textSize),bg="white",fg=bgcolor,command=unlockDangaiIchigo)
-    repairButton = Button(mainPage,text="Repair files",font=("Courrier",textSize),bg="white",fg=bgcolor,command=repair)
-    refreshLauncherButton = Button(mainPage,text="Refresh launcher",font=("Courrier",textSize),bg="white",fg=bgcolor,command=refreshLauncher)
-    reworksPageButton = Button(mainPage,text="Reworks",font=("Courrier",textSize),bg="white",fg=bgcolor,command=reworksMenu)
-   
+    paddingYvalue = 3
 
-
-    # Apply hover effects to main-page buttons 
-    add_hover(launchButton,          "Launch the game using the version selected in the dropdown above.")
-    add_hover(joinDiscordButton,     "Open the community Discord server in your browser.")
-    add_hover(changeGamePathButton,  "Change the folder path where your copy of Bleach Rebirth of Souls is installed.")
-    add_hover(readBalanceChangesButton, "Open the latest balance-changes notes")
-    add_hover(gameModesButton,       "Switch between different game modes (Base only, 8 konpaku, etc...)")
-    add_hover(lowSpecButton,         "Toggle per-effect FPS booster settings to improve performance on lower-end PCs.")
-    add_hover(repairButton,          "Restore your game files from a clean backup copy of the game.")
-    add_hover(CreditsButton,         "View the credits for the mods used in this patch.")
-    add_hover(unlockDangaiIchigoButton, "Unlocks Dangai Ichigo")
-    add_hover(refreshLauncherButton, "Refresh the launcher to get the latest updates.")
-
-    #pack
-    labelTitle.pack()
-    labelSubTitle.pack()
-    versionPanel.pack(pady=(2,4))
+    # ── Main page ────────────────────────────────────────────────────────────
+    versionPanel.pack(pady=(0,6))
     #labelWarning.pack(fill=X)
-    labelGamePath.pack(fill=X)
-    brosVersionList.pack(pady=paddingYvalue,fill=X)
-    launchButton.pack()
-    joinDiscordButton.pack(pady=paddingYvalue,fill=X)
-    changeGamePathButton.pack(pady=paddingYvalue,fill=X)
-    readBalanceChangesButton.pack(pady=paddingYvalue,fill=X)
-    gameModesButton.pack(pady=paddingYvalue,fill=X)
-    #ostSettingsButton.pack(pady=paddingYvalue,fill=X)
-    lowSpecButton.pack(pady=paddingYvalue,fill=X)
-    repairButton.pack(pady=paddingYvalue,fill=X)
-    unlockDangaiIchigoButton.pack(pady=paddingYvalue,fill=X)
-    refreshLauncherButton.pack(pady=paddingYvalue,fill=X)
+    labelGamePathOuter, labelGamePathInner = make_card(mainPage)
+    labelGamePath = Label(labelGamePathInner, text=f'📁  Current game path : {game_path}',font=FONT_SMALL,bg=PANEL,fg=TEXT_MUTED, wraplength=480, justify="left")
+    labelGamePath.pack(anchor="w")
+    labelGamePathOuter.pack(fill=X, pady=(0,7))
+
+    playOuter, playInner = make_card(mainPage, "Play")
+    brosVersionList = ttk.Combobox(
+        playInner,
+        textvariable=brosVersion,
+        values=gameVersionsList,
+        state="readonly",
+        font=FONT_COMBO,
+        style="Bros.TCombobox"
+    )
+    brosVersionList.set("Choose a game version")
+    launchButton = mkbutton(playInner, "Launch the game", preLauncher, kind="primary", icon="▶",
+                             tooltip="Launch the game using the version selected in the dropdown above.")
+    brosVersionList.pack(pady=(0,paddingYvalue+3), fill=X)
+    launchButton.pack(fill=X)
+    playOuter.pack(fill=X, pady=(0,7))
+
+    customizeOuter, customizeInner = make_card(mainPage, "Customize")
+    gameModesButton = mkbutton(customizeInner, "Game Modes", gameModesMenu, icon="🎮",
+                                tooltip="Switch between different game modes (Base only, 8 konpaku, etc...)")
+    lowSpecButton = mkbutton(customizeInner, "FPS Booster settings", performanceSettingsMenu, icon="⚡",
+                              tooltip="Toggle per-effect FPS booster settings to improve performance on lower-end PCs.")
+    unlockDangaiIchigoButton = mkbutton(customizeInner, "Unlock Dangai Ichigo", unlockDangaiIchigo, icon="🔓",
+                                         tooltip="Unlocks Dangai Ichigo")
+    gameModesButton.pack(pady=paddingYvalue, fill=X)
+    lowSpecButton.pack(pady=paddingYvalue, fill=X)
+    unlockDangaiIchigoButton.pack(pady=(paddingYvalue,0), fill=X)
+    customizeOuter.pack(fill=X, pady=(0,7))
+
+    toolsOuter, toolsInner = make_card(mainPage, "Tools & Community")
+    changeGamePathButton = mkbutton(toolsInner, "Change your game path", changeGamePath, icon="🗂",
+                                     tooltip="Change the folder path where your copy of Bleach Rebirth of Souls is installed.")
+    readBalanceChangesButton = mkbutton(toolsInner, "Read balance changes", readBalanceChanges, icon="📜",
+                                         tooltip="Open the latest balance-changes notes")
+    repairButton = mkbutton(toolsInner, "Repair files", repair, icon="🛠",
+                             tooltip="Restore your game files from a clean backup copy of the game.")
+    refreshLauncherButton = mkbutton(toolsInner, "Refresh launcher", refreshLauncher, icon="🔄",
+                                      tooltip="Refresh the launcher to get the latest updates.")
+    CreditsButton = mkbutton(toolsInner, "Credits", readCredits, icon="🎬",
+                              tooltip="View the credits for the mods used in this patch.")
+    joinDiscordButton = mkbutton(toolsInner, "Join our discord :) ", lambda: webbrowser.open("https://discord.gg/fSbsZE3qSZ"), icon="💬",
+                                  tooltip="Open the community Discord server in your browser.")
+    reworksPageButton = mkbutton(toolsInner, "Reworks", reworksMenu, icon="✨")
+    changeGamePathButton.pack(pady=paddingYvalue, fill=X)
+    readBalanceChangesButton.pack(pady=paddingYvalue, fill=X)
+    repairButton.pack(pady=paddingYvalue, fill=X)
+    refreshLauncherButton.pack(pady=paddingYvalue, fill=X)
     #reworksPageButton.pack(pady=paddingYvalue,fill=X)
-    CreditsButton.pack(pady=paddingYvalue,fill=X)
+    CreditsButton.pack(pady=paddingYvalue, fill=X)
+    joinDiscordButton.pack(pady=(paddingYvalue,0), fill=X)
+    toolsOuter.pack(fill=X)
 
 
-    labelTitleSettings.pack()
-    labelSubTitleSettings.pack()
+    # ── Settings page (FPS booster effect toggles) ──────────────────────────
+    settingsOuter, settingsInner = make_card(settingsPage, "FPS Booster effects")
 
-    labelTitleReworks.pack()
-    labelSubTitleReworks.pack()
-
-
-    #Settings page
-    awakeningAuraButton = Button(
-    settingsPage,
-    text=f'remove awakening aura : currently {"OFF" if config["awakeningaura"] == "original" else "ON"}',
-    font=("Courrier", textSize),
-    bg="white",
-    fg=bgcolor,
-    command=adjustAwakeningAuraSettings
-)
+    awakeningAuraButton = mkbutton(
+        settingsInner,
+        text=f'remove awakening aura : currently {"OFF" if config["awakeningaura"] == "original" else "ON"}',
+        command=adjustAwakeningAuraSettings,
+        tooltip="Toggle the awakening aura visual effect on/off to save GPU performance."
+    )
     awakeningAuraButton.pack(pady=paddingYvalue, fill=X)
+    set_toggle_visual(awakeningAuraButton, config["awakeningaura"] != "original")
 
 
-    breakerGrabButton = Button(
-        settingsPage,
+    breakerGrabButton = mkbutton(
+        settingsInner,
         text=f'remove breaker grab effect : currently {"OFF" if config["breaker_grab"] == "original" else "ON"}',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=adjustBreakerGrabSettings
+        command=adjustBreakerGrabSettings,
+        tooltip="Toggle the breaker grab screen effect on/off."
     )
     breakerGrabButton.pack(pady=paddingYvalue, fill=X)
+    set_toggle_visual(breakerGrabButton, config["breaker_grab"] != "original")
 
 
-    hakugekiButton = Button(
-        settingsPage,
+    hakugekiButton = mkbutton(
+        settingsInner,
         text=f'remove hakugeki effect : currently {"OFF" if config["hakugeki"] == "original" else "ON"}',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=adjustHakugekiSettings
+        command=adjustHakugekiSettings,
+        tooltip="Toggle the Hakugeki flash effect on/off."
     )
     hakugekiButton.pack(pady=paddingYvalue, fill=X)
+    set_toggle_visual(hakugekiButton, config["hakugeki"] != "original")
 
 
-    hitEffectButton = Button(
-        settingsPage,
+    hitEffectButton = mkbutton(
+        settingsInner,
         text=f'remove hit effect : currently {"OFF" if config["hit"] == "original" else "ON"}',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=adjustHitEffectSettings
+        command=adjustHitEffectSettings,
+        tooltip="Toggle hit impact visual effects on/off."
     )
     hitEffectButton.pack(pady=paddingYvalue, fill=X)
+    set_toggle_visual(hitEffectButton, config["hit"] != "original")
 
 
-    reverseGlobeButton = Button(
-        settingsPage,
+    reverseGlobeButton = mkbutton(
+        settingsInner,
         text=f'remove reverse globe effect : currently {"OFF" if config["reverse_globe"] == "original" else "ON"}',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=adjustReverseGlobeSettings
+        command=adjustReverseGlobeSettings,
+        tooltip="Toggle the reverse globe screen effect on/off."
     )
     reverseGlobeButton.pack(pady=paddingYvalue, fill=X)
+    set_toggle_visual(reverseGlobeButton, config["reverse_globe"] != "original")
 
 
-    skillActivationButton = Button(
-        settingsPage,
+    skillActivationButton = mkbutton(
+        settingsInner,
         text=f'remove skill activation effect : currently {"OFF" if config["skill_activation"] == "original" else "ON"}',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=adjustSkillActivationSettings 
+        command=adjustSkillActivationSettings,
+        tooltip="Toggle the skill activation flash effect on/off."
     )
     skillActivationButton.pack(pady=paddingYvalue, fill=X)
-    
-    mainMenuButton = Button(
-        settingsPage,
-        text="Main Menu",
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=backToMainMenu
-    )
+    set_toggle_visual(skillActivationButton, config["skill_activation"] != "original")
 
-    mainMenuButton.pack(pady=paddingYvalue,fill=X)
+    settingsOuter.pack(fill=X, pady=(0,7))
 
-    # Apply hover effects to settings-page buttons
-    add_hover(awakeningAuraButton,    "Toggle the awakening aura visual effect on/off to save GPU performance.")
-    add_hover(breakerGrabButton,      "Toggle the breaker grab screen effect on/off.")
-    add_hover(hakugekiButton,         "Toggle the Hakugeki flash effect on/off.")
-    add_hover(hitEffectButton,        "Toggle hit impact visual effects on/off.")
-    add_hover(reverseGlobeButton,     "Toggle the reverse globe screen effect on/off.")
-    add_hover(skillActivationButton,  "Toggle the skill activation flash effect on/off.")
-    add_hover(mainMenuButton,         "Return to the main menu.")
+    mainMenuButton = mkbutton(settingsPage, "Main Menu", backToMainMenu, kind="ghost", icon="←",
+                               tooltip="Return to the main menu.")
+    mainMenuButton.pack(pady=paddingYvalue, fill=X)
 
     #game modes page
-    labelTitleGameModes.pack(pady=paddingYvalue)
-    labelSubTitleGameModes.pack(pady=paddingYvalue)
+    gameModesOuter, gameModesInner = make_card(gameModesPage, "Game Modes")
 
-    gameModesMenuButton = Button(
-        gameModesPage,
-        text="Main Menu",
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=backToMainMenu
-    )
-
-    baseOnlyButton = Button(
-        gameModesPage,
-        text=f'Base Only : (Currently {"ON" if gameMode == "BaseOnly" else "OFF"})',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=baseOnlyFunc
-    )
-
-    teamBattleButton = Button(
-        gameModesPage,
+    teamBattleButton = mkbutton(
+        gameModesInner,
         text=f'Team Battle : (Currently {"ON" if config["TEAM_BATTLE"] == "ON" else "OFF"})',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=teamBattleFunc
+        command=teamBattleFunc,
+        tooltip="Toggle Team Battle mode: allows team fights."
     )
-    instantEvoAndSublimation = Button(
-        gameModesPage,
+    instantEvoAndSublimation = mkbutton(
+        gameModesInner,
         text=f'Instant Evo and Sublimation : (Currently {"ON" if gameMode == "InstantEvoAndSublimation" else "OFF"})',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=instantEvoAndSublimationFunc
+        command=instantEvoAndSublimationFunc,
+        tooltip="Toggle Instant Evolution & Sublimation: evolution and sublimation happen immediately."
     )
-
-    eightKonpakus = Button(
-        gameModesPage,
+    baseOnlyButton = mkbutton(
+        gameModesInner,
+        text=f'Base Only : (Currently {"ON" if gameMode == "BaseOnly" else "OFF"})',
+        command=baseOnlyFunc,
+        tooltip="Toggle Base Only mode: disables evolutions and sublimations entirely. Every character starts with 6 konpaku stocks"
+    )
+    eightKonpakus = mkbutton(
+        gameModesInner,
         text=f'8 Konpakus : (Currently {"ON" if gameMode == "EightKonpakus" else "OFF"})',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=eightKonpakusFunc
+        command=eightKonpakusFunc,
+        tooltip="Toggle 8 Konpakus mode: each player starts with 8 Konpaku stocks (revive characters start with 7)."
     )
-
-    extraKonpaku = Button(
-        gameModesPage,
+    extraKonpaku = mkbutton(
+        gameModesInner,
         text=f'Extra Konpaku : (Currently {"ON" if gameMode == "ExtraKonpaku" else "OFF"})',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=extraKonpakuFunc
+        command=extraKonpakuFunc,
+        tooltip="Toggle Extra Konpaku mode: gives every player extra Konpaku stocks."
     )
-
-    suddenDeath = Button(
-        gameModesPage,
+    suddenDeath = mkbutton(
+        gameModesInner,
         text=f'Sudden Death : (Currently {"ON" if gameMode == "SuddenDeath" else "OFF"})',
-        font=("Courrier", textSize),
-        bg="white",
-        fg=bgcolor,
-        command=suddenDeathFunc
+        command=suddenDeathFunc,
+        tooltip="Toggle Sudden Death mode."
     )
     teamBattleButton.pack(pady=paddingYvalue, fill=X)
     instantEvoAndSublimation.pack(pady=paddingYvalue, fill=X)
     baseOnlyButton.pack(pady=paddingYvalue, fill=X)
     eightKonpakus.pack(pady=paddingYvalue, fill=X)
     extraKonpaku.pack(pady=paddingYvalue, fill=X)
-    suddenDeath.pack(pady=paddingYvalue, fill=X)
-    gameModesMenuButton.pack(pady=paddingYvalue, fill=X)
+    suddenDeath.pack(pady=(paddingYvalue,0), fill=X)
+    gameModesOuter.pack(fill=X, pady=(0,7))
+    set_toggle_visual(teamBattleButton, config["TEAM_BATTLE"] == "ON")
 
-    # Apply hover effects to game-modes-page buttons
-    add_hover(teamBattleButton,        "Toggle Team Battle mode: allows team fights.")
-    add_hover(instantEvoAndSublimation,"Toggle Instant Evolution & Sublimation: evolution and sublimation happen immediately.")
-    add_hover(baseOnlyButton,          "Toggle Base Only mode: disables evolutions and sublimations entirely. Every character starts with 6 konpaku stocks")
-    add_hover(eightKonpakus,           "Toggle 8 Konpakus mode: each player starts with 8 Konpaku stocks (revive characters start with 7).")
-    add_hover(extraKonpaku,            "Toggle Extra Konpaku mode: gives every player extra Konpaku stocks.")
-    add_hover(suddenDeath,             "Toggle Sudden Death mode.")
-    add_hover(gameModesMenuButton,     "Return to the main menu.")
+    gameModesMenuButton = mkbutton(gameModesPage, "Main Menu", backToMainMenu, kind="ghost", icon="←",
+                                    tooltip="Return to the main menu.")
+    gameModesMenuButton.pack(pady=paddingYvalue, fill=X)
 
     #repairPage
     labelRepairText = Label(
         repairPage,
-        text="Repairing files. Please wait",
-        font=("Courrier", 35),
+        text="🛠  Repairing files. Please wait",
+        font=("Segoe UI", 22, "bold"),
         bg=bgcolor,
-        fg=labelcolor
+        fg=ACCENT
     )
+    labelRepairText.pack(pady=(30,10))
 
     labelSubtitleRepairText = Label(
         repairPage,
-        text="Repairing files. Please wait",
-        font=("Courrier", 20),
+        text="Do not close this window, this may take a moment.",
+        font=FONT_BODY,
         bg=bgcolor,
-        fg=labelcolor
+        fg=TEXT_MUTED
     )
-    
+    labelSubtitleRepairText.pack()
 
-    labelTitleRepair.pack(pady=paddingYvalue)
-    labelSubTitleRepair.pack(pady=paddingYvalue)
-    labelRepairText.pack(pady=200)
-
-    reworksByakuyaButton = Button(reworksPage,text=f'Byakuya Rework : {"ON" if reworks[0] == "Byakuya" else "OFF"}',font=("Courrier",textSize),bg="white",fg=bgcolor,command=byakuyaReworkToggle)
-    reworksBackToMenuButton = Button(reworksPage,text="Back to menu",font=("Courrier",textSize),bg="white",fg=bgcolor,command=mainPage.tkraise)
+    reworksOuter, reworksInner = make_card(reworksPage, "Reworks")
+    reworksByakuyaButton = mkbutton(reworksInner, "Byakuya Rework", byakuyaReworkToggle)
     reworksByakuyaButton.pack(pady=paddingYvalue, fill=X)
+    reworksOuter.pack(fill=X, pady=(0,7))
+    reworksBackToMenuButton = mkbutton(reworksPage, "Back to menu", lambda: mainPage.tkraise(), kind="ghost", icon="←")
     reworksBackToMenuButton.pack(pady=paddingYvalue, fill=X)
 
     # Let the stacked pages fill the whole container (so buttons stretch to width).
@@ -1099,7 +1168,7 @@ try:
         # Crisp at native DPI + never clipped, whatever the monitor/scaling.
         window.update_idletasks()
         sw = window.winfo_screenwidth(); sh = window.winfo_screenheight()
-        w = min(max(window.winfo_reqwidth(), 700), sw - 40)
+        w = min(max(window.winfo_reqwidth(), 560), sw - 40)
         h = min(window.winfo_reqheight(), sh - 80)
         x = max(0, (sw - w) // 2); y = max(0, (sh - h) // 2 - 20)
         window.geometry(f"{w}x{h}+{x}+{y}")
