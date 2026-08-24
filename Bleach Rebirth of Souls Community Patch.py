@@ -554,6 +554,13 @@ try:
             injectFolder(gameVersion,"Motion")
             injectFolder(gameVersion,"00HIGH",False)
             injectFolder(gameVersion,"01MIDDLE",False)
+            # Demo/ carries the shortened match intros and stage opening cameras.
+            # MERGE only (fullFolder=False): the game's Demo folder holds ~1000
+            # packages and a /MIR would delete every one this version does not
+            # ship. Guarded on the folder existing, because the versions that do
+            # not carry it must still launch.
+            if os.path.isdir(os.path.join(BASE_DIR,"GameVersions",gameVersion,"Demo")):
+                injectFolder(gameVersion,"Demo",False)
 
 
 

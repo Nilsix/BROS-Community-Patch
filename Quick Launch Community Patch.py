@@ -140,6 +140,11 @@ def launch(gameVersion):
         injectFolder(gameVersion, "Motion")
         injectFolder(gameVersion, "00HIGH", False)
         injectFolder(gameVersion, "01MIDDLE", False)
+        # Demo/ = shortened match intros and stage opening cameras. MERGE only:
+        # the game's Demo folder holds ~1000 packages and a /MIR would wipe every
+        # one this version does not ship.
+        if os.path.isdir(os.path.join(BASE_DIR, "GameVersions", gameVersion, "Demo")):
+            injectFolder(gameVersion, "Demo", False)
 
         shutil.copytree(os.path.join(BASE_DIR, "Files", "Spec Mod", "reverse_globe", f'{config["reverse_globe"]}', "high"),
                          os.path.join(game_path, "00HIGH", "Effect", "spfx", "com"), dirs_exist_ok=True)
