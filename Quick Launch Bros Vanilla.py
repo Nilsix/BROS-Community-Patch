@@ -130,6 +130,10 @@ def launch(gameVersion):
         injectFolder(gameVersion, "Motion")
         injectFolder(gameVersion, "00HIGH", False)
         injectFolder(gameVersion, "01MIDDLE", False)
+        # Vanilla ships the STOCK Demo/ so that picking it undoes the shortened
+        # intros and stage cameras the patch installs. Merge, never /MIR.
+        if os.path.isdir(os.path.join(BASE_DIR, "GameVersions", gameVersion, "Demo")):
+            injectFolder(gameVersion, "Demo", False)
 
         shutil.copytree(os.path.join(BASE_DIR, "Files", "Spec Mod", "reverse_globe", f'{config["reverse_globe"]}', "high"),
                          os.path.join(game_path, "00HIGH", "Effect", "spfx", "com"), dirs_exist_ok=True)
