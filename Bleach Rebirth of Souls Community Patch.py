@@ -86,16 +86,40 @@ try:
         if "Already up to date." in output:
             pass
 
-        #if there is an update, will relaunch the launcher so the code actually gets reset too
+        # An update that lands new launcher code cannot take effect in THIS
+        # process: Python already holds the old module in memory, so the player
+        # would run the previous launch() against the new files -- which is how
+        # a data-only feature can land while the code that installs it does not.
+        #
+        # This used to stop and ask the player to reopen the launcher. The
+        # console is hidden (see the except branch below, which has to call
+        # ShowWindow to make it visible), so that prompt was invisible: the
+        # launcher looked frozen and whoever killed it never got the update
+        # applied. So relaunch ourselves instead, and only ever once -- the
+        # child carries a marker so a pull that keeps reporting changes cannot
+        # bounce the launcher forever.
         else:
-            pass
-            #subprocess.run(os.path.join(BASE_DIR,"Bleach Rebirth of Souls Community Patch.py"),shell=True)
-            #try :
-                #winsound.PlaySound(None,winsound.SND_PURGE)
-            #except:
-                #pass
-            input("A new update just dropped, press enter to close this window then reopen your launcher")
-            exit()
+            if os.environ.get("BROS_LAUNCHER_RELAUNCHED") != "1":
+                child_env = dict(os.environ)
+                child_env["BROS_LAUNCHER_RELAUNCHED"] = "1"
+                try:
+                    if getattr(sys, "frozen", False):
+                        cmd = [sys.executable]
+                    else:
+                        cmd = [sys.executable, os.path.abspath(__file__)]
+                    subprocess.Popen(cmd, env=child_env, cwd=BASE_DIR)
+                    exit()
+                except Exception as relaunch_error:
+                    try:
+                        ctypes.windll.user32.ShowWindow(
+                            ctypes.windll.kernel32.GetConsoleWindow(), 1)
+                    except:
+                        pass
+                    print("Auto-relaunch failed :", relaunch_error)
+                    input("A new update just dropped, press enter to close this "
+                          "window then reopen your launcher")
+                    exit()
+            # Second pass: the code on disk is what is running now, so carry on.
 
     except Exception as e:
         try:
