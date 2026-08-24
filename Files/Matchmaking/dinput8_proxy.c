@@ -24,6 +24,8 @@
  *      patch_aizen_kikon_counter  Kikon Counter costs 5 flames only  [DISABLED]
  *      patch_aizen_flamecost    Aizen SP1 costs 1 (base) / 3 (evo) flames [DISABLED]
  *      patch_stage_new_id_gate  brand-new stage ids can load their geometry
+ *      patch_room_result_menu   room match ends on the free-match result menu
+ *      patch_room_rematch_wait  a split choice falls back to the room in 1 s, not 120
  *  Rebuild with build_dinput8.bat and check patch_ranked.log for one line
  *  per patch. See the header of each patch_* function for its anchors.
  * ---------------------------------------------------------------------
@@ -56,6 +58,7 @@
    -out call, so the log always says what shipped) ---------------------- */
 #define ENABLE_AIZEN_KIKON_COUNTER 0   /* 2026-08-06: off, precaution (see header) */
 #define ENABLE_AIZEN_FLAMECOST     0   /* 2026-08-06: off, CRASHES (see header)    */
+#define ENABLE_ROOM_RESULT_MENU    1   /* room match ends on a result menu          */
 
 /* ---------- shared helpers ------------------------------------------- */
 static void exe_dir_path(const char* name, char* out, size_t n)
@@ -642,6 +645,317 @@ static void patch_stage_new_id_gate(void)
     }
 }
 
+/* ---- trampoline allocator, needed by the label hooks below ---------- */
+static void* rr_alloc_near(unsigned char* anchor, size_t n)
+{
+    SYSTEM_INFO si;
+    uintptr_t gran, a, d, base;
+    void* p;
+    int i;
+    GetSystemInfo(&si);
+    gran = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
+    a = (uintptr_t)anchor;
+    for (d = gran; d < 0x60000000ULL; d += gran) {
+        uintptr_t cands[2];
+        cands[0] = a - d;
+        cands[1] = a + d;
+        for (i = 0; i < 2; i++) {
+            base = cands[i] & ~(gran - 1);
+            if (base < 0x10000) continue;
+            p = VirtualAlloc((void*)base, n, MEM_COMMIT | MEM_RESERVE,
+                             PAGE_EXECUTE_READWRITE);
+            if (p) return p;
+        }
+    }
+    return NULL;
+}
+
+/* ===================== PART 9: ONLINE ROOM-MATCH RESULT MENU ==========
+ *  Offline versus ends on a three-entry menu over the VICTOR screen --
+ *  "Try Again" / "Character Selection" / "Return to Offline Menu". An online
+ *  ROOM MATCH ends with no menu at all: the result screen runs a timer out and
+ *  drops straight back to the room lobby. Free match and ranked match DO get a
+ *  menu ("Try Again" / "Opponent Search" / "Quit ..."), and its "Try Again" is
+ *  a real netcode-synchronised rematch.
+ *
+ *  None of that machinery is missing for room match -- only unreachable.
+ *
+ *  WHAT PICKS THE MENU. SOnlineAction::SetupDynamic computes a result-screen
+ *  KIND from the online mode at SceneGlobalInfo+0x498 (0 room, 1 free,
+ *  2 ranked) and hands it to the result UI, which stores it at ctrl+0x250:
+ *
+ *      mov r15d,3            ; default: free match
+ *      test r8d,r8d          ; mode
+ *      jne  +9
+ *      lea  r15d,[r8+7]      ; mode 0 (ROOM MATCH) -> kind 7
+ *      ...                   ; mode 2 -> 4, or 5/6 for a ranked series
+ *
+ *  Both the menu builder and the scene dispatcher then gate on that kind:
+ *
+ *      builder    (uint)(kind-5) > 2                 -> build the choice list
+ *      builder    (uint)(kind-3) <= 1                -> ONLINE labels + codes
+ *      dispatcher (uint)(kind-3) <= 1 || kind >= 8   -> read the player's choice
+ *
+ *  Kind 7 fails all three, which is the whole reason room match has no menu.
+ *
+ *  WHAT THE CHOICES DO. The builder writes a parallel array of action codes
+ *  next to the labels (ctrl+0x308, a vector<int>), and SOnlineAction::vfunc27
+ *  dispatches codes[cursor] in scene state 0x406:
+ *
+ *      0 -> SetState(0x458) + sync slot 8   the two-sided REMATCH handshake,
+ *                                           which ends in the "RESTART_BATTLE"
+ *                                           flow command and SetState(0x462)
+ *      6 -> SetState(0x45a) "BACK_ONLINE_MENU"
+ *      7 -> SetState(0x45b) "BACK_MAIN_MENU"
+ *
+ *  and the online flow graph registers ALL THREE on the RoomMatchAction node:
+ *  RESTART_BATTLE -> JUMP_RoomMatchAction (straight back into the fight, same
+ *  characters, no character select), BACK_ONLINE_MENU (pops to the room), and
+ *  BACK_MAIN_MENU. So every code the free-match menu emits is already a valid
+ *  room-match transition -- the room-match kind just never lets you pick one.
+ *
+ *  THE PATCH. One byte: lea r15d,[r8+7] -> [r8+3], so a room match uses the
+ *  free-match result kind and gets the free-match menu. That path is what free
+ *  match runs every day, which is the point: no new combination of kind and UI
+ *  state is invented. Kind 4/6 (ranked) is deliberately NOT used -- it drives
+ *  the rank-point animation, which a room match has no data for.
+ *
+ *  Two label hooks then fix the wording, because entries 2 and 3 would
+ *  otherwise read "Opponent Search" and "Quit Free Match" while actually
+ *  returning to the room and to the main menu. Each hook swaps the CommonText
+ *  key the builder passes, but ONLY when SceneGlobalInfo+0x498 == 0, so a real
+ *  free match keeps its own wording. Both replacement keys already ship in
+ *  Text/CommonText.cat, so no data file changes.
+ *
+ *  Live-build anchors (28,283,464 B). Every site is byte-checked before it is
+ *  touched, and the label hooks additionally check that the displacement they
+ *  find really resolves to the string they expect.
+ *
+ *      0x8043F9  mov r15d,3 / test r8d,r8d / jne / lea r15d,[r8+7]
+ *      0x3362C9  lea rdx,[rip+..] -> "BATTLE_RESULT_CHOICES_1"  (entry 2)
+ *      0x33632E  lea rdx,[rip+..] -> "BATTLE_RESULT_CHOICES_3"  (entry 3)
+ *      0x1CFBAB8 &SceneGlobalInfo (shared with INTROSKIP), +0x498 = online mode
+ *
+ *  rax is dead at both label sites (a call follows before any read of it) and
+ *  flags are dead there too, so each stub needs no save/restore.
+ * --------------------------------------------------------------------- */
+#define ROOMRESULT_GLOBAL_RVA 0x1CFBAB8  /* &SceneGlobalInfo; +0x498 = online mode */
+#define ROOMRESULT_KIND_RVA   0x8043F9
+#define ROOMRESULT_LBL2_RVA   0x3362C9
+#define ROOMRESULT_LBL3_RVA   0x33632E
+#define ROOMRESULT_MODE_OFF   0x498      /* SceneGlobalInfo + this = online mode */
+
+static int roomresult_hook_label(unsigned char* mod, unsigned int rva,
+                                 const char* expect, const char* replace,
+                                 const char* tag)
+{
+    unsigned char* site = mod + rva;
+    unsigned char* key;
+    unsigned char* stub;
+    unsigned char* gptr = mod + ROOMRESULT_GLOBAL_RVA;   /* &SceneGlobalInfo* */
+    unsigned char  b[128];
+    int n = 0, off_jz, off_jne, off_skip, off_orig, off_back;
+    int disp;
+    long long rel;
+    DWORD old;
+
+    if (site[0] != 0x48 || site[1] != 0x8D || site[2] != 0x15) {
+        log_line("ROOMRESULT: %s is not a lea rdx,[rip+d] at RVA 0x%X -- label left alone",
+                 tag, rva);
+        return 0;
+    }
+    memcpy(&disp, site + 3, 4);
+    key = site + 7 + disp;
+    if (strcmp((const char*)key, expect) != 0) {
+        log_line("ROOMRESULT: %s at RVA 0x%X resolves to \"%.32s\", expected \"%s\" -- "
+                 "label left alone", tag, rva, (const char*)key, expect);
+        return 0;
+    }
+
+    stub = (unsigned char*)rr_alloc_near(site, 128);
+    if (!stub) {
+        log_line("ROOMRESULT: %s no trampoline within +/-2GB -- label left alone", tag);
+        return 0;
+    }
+
+    b[n++]=0x48; b[n++]=0xB8; memcpy(b+n,&gptr,8); n+=8;      /* mov  rax,&singleton  */
+    b[n++]=0x48; b[n++]=0x8B; b[n++]=0x00;                    /* mov  rax,[rax]       */
+    b[n++]=0x48; b[n++]=0x85; b[n++]=0xC0;                    /* test rax,rax         */
+    b[n++]=0x74; off_jz  = n++;                               /* jz   orig            */
+    b[n++]=0x83; b[n++]=0xB8;
+    b[n++]=(unsigned char)(ROOMRESULT_MODE_OFF & 0xFF);
+    b[n++]=(unsigned char)((ROOMRESULT_MODE_OFF >> 8) & 0xFF);
+    b[n++]=0x00; b[n++]=0x00; b[n++]=0x00;                    /* cmp  [rax+498h],0    */
+    b[n++]=0x75; off_jne = n++;                               /* jne  orig            */
+    b[n++]=0x48; b[n++]=0xBA; memcpy(b+n,&replace,8); n+=8;   /* mov  rdx,room key    */
+    b[n++]=0xEB; off_skip = n++;                              /* jmp  back            */
+    off_orig = n;                                             /* orig:                */
+    b[off_jz]  = (unsigned char)(off_orig - (off_jz  + 1));
+    b[off_jne] = (unsigned char)(off_orig - (off_jne + 1));
+    b[n++]=0x48; b[n++]=0xBA; memcpy(b+n,&key,8); n+=8;       /* mov  rdx,original    */
+    off_back = n;                                             /* back:                */
+    b[off_skip] = (unsigned char)(off_back - (off_skip + 1));
+    rel = (long long)(site + 7) - (long long)(stub + n + 5);
+    b[n++]=0xE9; memcpy(b+n,&rel,4); n+=4;                    /* jmp  site+7          */
+
+    memcpy(stub, b, (size_t)n);
+    FlushInstructionCache(GetCurrentProcess(), stub, (size_t)n);
+
+    rel = (long long)stub - (long long)(site + 5);
+    if (rel > 0x7FFFFFFFLL || rel < -0x80000000LL) {
+        log_line("ROOMRESULT: %s trampoline out of rel32 range -- label left alone", tag);
+        return 0;
+    }
+    if (!VirtualProtect(site, 7, PAGE_EXECUTE_READWRITE, &old)) {
+        log_line("ROOMRESULT: %s VirtualProtect failed at RVA 0x%X", tag, rva);
+        return 0;
+    }
+    site[0] = 0xE9; memcpy(site + 1, &rel, 4);
+    site[5] = 0x90; site[6] = 0x90;          /* never leave half an instruction */
+    VirtualProtect(site, 7, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 7);
+    log_line("ROOMRESULT: %s at RVA 0x%X -- \"%s\" -> \"%s\" when the online mode is "
+             "room match, unchanged for free/ranked", tag, rva, expect, replace);
+    return 1;
+}
+
+static void patch_room_result_menu(void)
+{
+    /* The CommonText keys the room-match menu reads instead. Both already ship in
+       Text/CommonText.cat: ONLINE_MENU_ROOMMATCH = "ROOM MATCH" (JA "ROOM MATCH"),
+       mainMenu = "Return to Main Menu". */
+    static const char k_room[] = "ONLINE_MENU_ROOMMATCH";
+    static const char k_main[] = "mainMenu";
+
+    static const unsigned char kind_orig[15] = {
+        0x41,0xBF,0x03,0x00,0x00,0x00,   /* mov  r15d,3       free-match kind   */
+        0x45,0x85,0xC0,                  /* test r8d,r8d      online mode       */
+        0x75,0x09,                       /* jne  +9                             */
+        0x45,0x8D,0x78,0x07              /* lea  r15d,[r8+7]  room-match kind   */
+    };
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    unsigned char* site;
+    DWORD old;
+
+    if (!mod) return;
+    site = mod + ROOMRESULT_KIND_RVA;
+
+    if (memcmp(site, kind_orig, sizeof(kind_orig)) != 0) {
+        log_line("ROOMRESULT: bytes not at expected RVA 0x%X (game updated?) -- skipped, "
+                 "a room match still ends with no menu", ROOMRESULT_KIND_RVA);
+        return;
+    }
+    if (!VirtualProtect(site + 14, 1, PAGE_EXECUTE_READWRITE, &old)) {
+        log_line("ROOMRESULT: VirtualProtect failed at RVA 0x%X", ROOMRESULT_KIND_RVA + 14);
+        return;
+    }
+    site[14] = 0x03;                     /* lea r15d,[r8+7] -> [r8+3]           */
+    VirtualProtect(site + 14, 1, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site + 14, 1);
+    log_line("ROOMRESULT: kind patched at RVA 0x%X -- a room match now uses the free-match "
+             "result kind 3, so it ends on the menu: Try Again (synced rematch, same "
+             "characters) / back to the room / back to the main menu",
+             ROOMRESULT_KIND_RVA + 14);
+
+    roomresult_hook_label(mod, ROOMRESULT_LBL2_RVA, "BATTLE_RESULT_CHOICES_1", k_room, "entry2");
+    roomresult_hook_label(mod, ROOMRESULT_LBL3_RVA, "BATTLE_RESULT_CHOICES_3", k_main, "entry3");
+}
+
+/* ---- the rematch wait is 120 seconds, and that is the "freeze" -----------
+ *  Reported as a crash, then as a freeze, and it is neither: pick Play again
+ *  while the opponent picks Return to room and YOUR client sits there for two
+ *  minutes before dropping back into the room. Theirs returns immediately.
+ *
+ *  `SOnlineAction::vfunc27`, scene state 0x458 -- the rematch handshake:
+ *
+ *      if ((peer_flags & 0x100) == 0) {          // slot 8 not announced
+ *          [scene+0xC8] += dt;                   // accumulate
+ *          comiss xmm0, [rip -> 120.0f]          // 0x8054CA
+ *          jbe  keep waiting;
+ *          ... SetState(0x45a)                   // give up -> back to the room
+ *      } else {
+ *          clear bit 8 everywhere;
+ *          SetState(0x459)                       // both said yes -> rematch
+ *      }
+ *
+ *  So the engine's own answer to a split choice is already "both end up in the
+ *  room" -- it just takes 120 s to get there, because that timeout was written
+ *  for a mode where the menu never disagrees. Note this also rules out the
+ *  obvious-looking fix of announcing slot 8 on the way out: bit 8 means "I want
+ *  the rematch", so the waiting client would restart the fight alone.
+ *
+ *  The wait only has to cover how much LATER than you the opponent presses.
+ *  Tuned down 120 -> 15 -> 5 -> 1 on request. At 1 s the fallback is effectively
+ *  instant, and two things follow that are worth writing down rather than
+ *  discovering twice:
+ *
+ *    - a mutual rematch now needs both players to press within a second of each
+ *      other, otherwise both fall back to the room;
+ *    - the slower player can enter 0x458 and find the faster player's slot-8 bit
+ *      ALREADY set after that player has timed out and left, which sends them to
+ *      0x459 -- restarting the fight against someone who is no longer there.
+ *      Nothing was found that clears an announced bit on the timeout path, so
+ *      this race is real and gets likelier the shorter the wait.
+ *
+ *  The image carries 1, 2, 3, 4, 5, 6, 8, 10 and 15 as literals, so re-tuning is
+ *  always the same four bytes.
+ *
+ *  120.0f is a SHARED literal -- ~40 instructions across the exe divide by it
+ *  (frame/second conversions) -- so it must not be edited in place. Instead the
+ *  single `comiss` at RVA 0x8054CA is repointed at the 15.0f literal the image
+ *  already carries at RVA 0x1213920. Four bytes, one instruction, nothing else
+ *  in the process sees a different number.
+ */
+#define REMATCHWAIT_RVA      0x8054CA     /* comiss xmm0, dword [rip+disp32]  */
+#define REMATCHWAIT_NEWRVA   0x11CFEC8    /* the image's own 1.0f             */
+#define REMATCHWAIT_OLDVAL   120.0f
+#define REMATCHWAIT_NEWVAL   1.0f
+
+static void patch_room_rematch_wait(void)
+{
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    unsigned char* site;
+    unsigned char* oldp;
+    unsigned char* newp;
+    int disp;
+    DWORD old;
+
+    if (!mod) return;
+    site = mod + REMATCHWAIT_RVA;
+
+    if (site[0] != 0x0F || site[1] != 0x2F || site[2] != 0x05) {
+        log_line("REMATCHWAIT: no `comiss xmm0,[rip+d]` at RVA 0x%X (game updated?) -- "
+                 "skipped, a split choice still stalls for %g s",
+                 REMATCHWAIT_RVA, (double)REMATCHWAIT_OLDVAL);
+        return;
+    }
+    memcpy(&disp, site + 3, 4);
+    oldp = site + 7 + disp;
+    newp = mod + REMATCHWAIT_NEWRVA;
+    if (*(const float*)oldp != REMATCHWAIT_OLDVAL) {
+        log_line("REMATCHWAIT: the operand at RVA 0x%X reads %g, expected %g -- skipped",
+                 REMATCHWAIT_RVA, (double)*(const float*)oldp, (double)REMATCHWAIT_OLDVAL);
+        return;
+    }
+    if (*(const float*)newp != REMATCHWAIT_NEWVAL) {
+        log_line("REMATCHWAIT: RVA 0x%X does not hold %g -- skipped",
+                 REMATCHWAIT_NEWRVA, (double)REMATCHWAIT_NEWVAL);
+        return;
+    }
+    disp = (int)(long long)(newp - (site + 7));
+    if (!VirtualProtect(site + 3, 4, PAGE_EXECUTE_READWRITE, &old)) {
+        log_line("REMATCHWAIT: VirtualProtect failed at RVA 0x%X", REMATCHWAIT_RVA);
+        return;
+    }
+    memcpy(site + 3, &disp, 4);
+    VirtualProtect(site + 3, 4, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 7);
+    log_line("REMATCHWAIT: RVA 0x%X repointed %g -> %g s -- when one side picks Play again "
+             "and the other leaves, the waiting client now falls back to the room in %g s "
+             "instead of %g", REMATCHWAIT_RVA, (double)REMATCHWAIT_OLDVAL,
+             (double)REMATCHWAIT_NEWVAL, (double)REMATCHWAIT_NEWVAL, (double)REMATCHWAIT_OLDVAL);
+}
+
 static DWORD WINAPI worker(LPVOID u)
 {
     (void)u;
@@ -670,6 +984,9 @@ static DWORD WINAPI worker(LPVOID u)
                   "af_action_is() reads the action-name string 8 bytes low and "
                   "dereferences a non-pointer for any name >= 16 chars");
     patch_stage_new_id_gate();
+    if (ENABLE_ROOM_RESULT_MENU) { patch_room_result_menu(); patch_room_rematch_wait(); }
+    else log_line("ROOMRESULT: DISABLED at build time -- a room match still ends with "
+                  "no menu and drops back to the room on a timer");
     for (int i=0;i<600;i++){ int r=try_install(); if(r==1)return 0; if(r<0)return 0; Sleep(500); }
     log_line("ERROR: steam_api64/matchmaking never appeared -- is this the game process?");
     return 0;
