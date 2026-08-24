@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import subprocess
+import sys
 import platform
 import zlib
 
@@ -45,6 +46,29 @@ def pulling_from_git():
         subprocess.run(["git", "-C", BASE_DIR, "reset", "--hard", "origin/main"], check=True, capture_output=True, text=True)
         subprocess.run(["git", "-C", BASE_DIR, "clean", "-fd", "-e", "Json"], check=True, capture_output=True, text=True)
     return subprocess.run(["git", "-C", BASE_DIR, "pull"], check=True, capture_output=True, text=True)
+
+
+def _relaunch_if_code_changed(result):
+    """A pull that lands new launcher code cannot take effect in this process.
+
+    Python already holds the old module in memory, so the run that fetches an
+    update would execute the PREVIOUS code against the new files -- which is
+    exactly how new data can land while the code that installs it does not. So
+    re-exec once, marked, so a pull that keeps reporting changes cannot loop."""
+    try:
+        if result is None or "Already up to date." in (result.stdout or ""):
+            return
+        if os.environ.get("BROS_LAUNCHER_RELAUNCHED") == "1":
+            return
+        child_env = dict(os.environ)
+        child_env["BROS_LAUNCHER_RELAUNCHED"] = "1"
+        cmd = [sys.executable] if getattr(sys, "frozen", False)               else [sys.executable, os.path.abspath(__file__)]
+        subprocess.Popen(cmd, env=child_env, cwd=BASE_DIR)
+        sys.exit()
+    except SystemExit:
+        raise
+    except Exception as e:
+        print("Auto-relaunch failed, continuing with the code already loaded:", e)
 
 
 def open_file(path):
@@ -122,7 +146,7 @@ def launch_patched(target_path):
 
 
 def launch(gameVersion):
-    pulling_from_git()
+    _relaunch_if_code_changed(pulling_from_git())
     if not os.path.exists(os.path.join(BASE_DIR,"GameModes","TeamBattle","TokenOpen.txt")):
         config["TEAM_BATTLE"] = "OFF"
     try:
