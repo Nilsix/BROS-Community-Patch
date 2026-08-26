@@ -26,6 +26,7 @@
  *      patch_stage_new_id_gate  brand-new stage ids can load their geometry
  *      patch_room_result_menu   room match ends on the free-match result menu
  *      patch_room_rematch_wait  a split choice falls back to the room in 1 s, not 120
+ *      patch_reawaken_battle    the Reawakeners start the match Reawakened [OFF by default]
  *  Rebuild with build_dinput8.bat and check patch_ranked.log for one line
  *  per patch. See the header of each patch_* function for its anchors.
  * ---------------------------------------------------------------------
@@ -59,6 +60,14 @@
 #define ENABLE_AIZEN_KIKON_COUNTER 0   /* 2026-08-06: off, precaution (see header) */
 #define ENABLE_AIZEN_FLAMECOST     0   /* 2026-08-06: off, CRASHES (see header)    */
 #define ENABLE_ROOM_RESULT_MENU    1   /* room match ends on a result menu          */
+
+/* "Reawakening Battle" -- a TEST-ONLY game mode, off in the shipped loader.
+   The launcher installs GameModes/ReawakeningBattle/dinput8.dll, which IS this
+   source built with  -DENABLE_REAWAKEN_BATTLE=1  , only while that mode is
+   selected; the default loader keeps the 0 and behaves exactly as before. */
+#ifndef ENABLE_REAWAKEN_BATTLE
+#define ENABLE_REAWAKEN_BATTLE     0   /* the Reawakeners start Reawakened */
+#endif
 
 /* ---------- shared helpers ------------------------------------------- */
 static void exe_dir_path(const char* name, char* out, size_t n)
@@ -956,6 +965,185 @@ static void patch_room_rematch_wait(void)
              (double)REMATCHWAIT_NEWVAL, (double)REMATCHWAIT_NEWVAL, (double)REMATCHWAIT_OLDVAL);
 }
 
+/* ================= PART 13: "Reawakening Battle" =====================
+ *  WHAT IT DOES
+ *  ------------
+ *  A casual mode: the four characters who own a Reawakening start the match
+ *  already in it, instead of having to meet its trigger. Everyone else plays
+ *  exactly as before.
+ *
+ *      pl001 Ichigo (Bankai)  Full Hollowfication
+ *      pl003 Uryu             Quincy: Letzt Stil
+ *      pl020 Aizen            Complete Hogyoku Fusion
+ *      pl036 Ulquiorra        Resurreccion Segunda Etapa
+ *      pl052 Yhwach           the Kaiser-level Reawakening
+ *
+ *  WHY IT IS SAFE TO DO AT ALL
+ *  ---------------------------
+ *  The Reawakening is the "ura transform". Which trigger a character uses is
+ *  data -- `ura_transform_mothod` in CharaStatus, read at 0x1404DA709 into the
+ *  status record at +0x8C (and hard-set to 3 for Yhwach at 0x1404DA714):
+ *
+ *      -1  no Reawakening (41 of the roster)
+ *       0  at 0 Konpaku with enough Fighting Spirit   pl001, pl008, pl023
+ *       1  Awakening again while Awakened, spirit max  pl003, pl036
+ *       2  at 0 Konpaku with enough Fighting Spirit    pl020, pl044
+ *       3  Kaiser level 9                              pl052 (exe-side)
+ *
+ *  But NONE of that is consulted when the engine is told which form to start
+ *  in. The fighter's CharaStatus init (0x140462E50) ends with a plain
+ *  "requested starting form" switch at 0x1404639C1: form 2 means
+ *  transform(fighter,1) followed by transform(fighter,2). That is the path
+ *  Training uses for its form selector, which is why picking a Reawakened
+ *  form there works with no condition met -- and it is character-agnostic.
+ *
+ *  HOW
+ *  ---
+ *  Hook RVA 0x4639C1 -- `mov ecx,[rbp+0x670]`, the read of that requested
+ *  form. For our four ids we substitute 2 and let the engine's own two-step
+ *  transform run; for everyone else the stolen instruction runs untouched, so
+ *  Training's own form selector still works normally.
+ *
+ *      rsi = the fighter -- `mov rsi,rcx` at 0x140462E7D, the ONLY write to
+ *            rsi in the 948 instructions before the site
+ *      [rsi+0xC00] = the character id, written by this same function at
+ *            0x140462E8A from its own argument, so it is already valid here
+ *
+ *  Verified before hooking: nothing branches INTO the six replaced bytes (one
+ *  branch targets the site itself, which lands on our jmp and is fine), and
+ *  rbp is the frame pointer set once at 0x140462E5D.
+ *
+ *  ONLINE
+ *  ------
+ *  The decision is a pure function of the character id, so both clients reach
+ *  the same starting state with no message -- nothing to sync. What is NOT
+ *  safe is meeting a client that does not have this DLL: it would simulate a
+ *  base-form opponent and desync. PART 2's issuer tag is exactly the pool
+ *  separator for that, so this mode shifts it by REAWAKEN_POOL_TAG and says so
+ *  in the log. Set the tag to 0 to share the normal pool (only sane if every
+ *  player in it runs this build).
+ *
+ *  ! pl001 and pl020 carry rev_soul_num 10 against soul_num 8, so in this mode
+ *  they start on 10 Konpaku where the rest of the roster has 9. That is the
+ *  shipped data for the form, and Training does the same thing -- flagging it
+ *  because it IS a balance difference, not because it is a defect.
+ * ==================================================================== */
+#define REAW_HOOK_RVA    0x4639C1u   /* mov ecx,[rbp+0x670] -- requested form */
+#define REAW_OFF_CHARAID 0x0C00      /* fighter: character id                 */
+#define REAW_FORM_REV    2           /* 0 base, 1 Awakened, 2 Reawakened      */
+#define REAW_CNT_FORCED  0x100       /* cave: fighters started Reawakened      */
+#ifndef REAWAKEN_POOL_TAG
+#define REAWAKEN_POOL_TAG 4001       /* keeps this mode out of the normal pool */
+#endif
+
+/* The roster this applies to. Add or remove ids here -- but keep it in step with
+   GameModes/ReawakeningBattle/Script/CharaStatus.fsv, which raises the same
+   characters' rev_soul_num to 10 so every Reawakening in the mode fields the
+   same Konpaku count. The compare below is `cmp eax, imm8` (sign-extended), so
+   an id above 127 would need a wider encoding. */
+static const int g_reaw_ids[] = { 1, 3, 20, 36, 52 };
+
+static unsigned char* g_reaw_cave = NULL;
+
+static DWORD WINAPI reaw_watch(LPVOID u)
+{
+    long long forced = 0;
+    int lines = 0;
+    (void)u;
+    while (g_reaw_cave && lines < 200) {
+        long long f2 = *(volatile long long*)(g_reaw_cave + REAW_CNT_FORCED);
+        if (f2 != forced) {
+            forced = f2; lines++;
+            log_line("REAWAKEN: %lld fighter(s) started Reawakened so far", forced);
+        }
+        Sleep(1000);
+    }
+    return 0;
+}
+
+static void patch_reawaken_battle(void)
+{
+    static const unsigned char orig[6] = {0x8B,0x8D,0x70,0x06,0x00,0x00};
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    unsigned char* site;
+    unsigned char* stub;
+    unsigned char  b[256];
+    int  n = 0, i, nj = 0, jf[8], force_at;
+    long long rel;
+    DWORD old;
+
+    if (!mod) return;
+    site = mod + REAW_HOOK_RVA;
+    if (memcmp(site, orig, sizeof(orig)) != 0) {
+        log_line("REAWAKEN: no `mov ecx,[rbp+0x670]` at RVA 0x%X (game updated?) -- skipped",
+                 REAW_HOOK_RVA);
+        return;
+    }
+    stub = (unsigned char*)rr_alloc_near(site, 0x200);
+    if (!stub) { log_line("REAWAKEN: no trampoline within +/-2GB -- skipped"); return; }
+    memset(stub, 0, 0x200);
+
+#define REAW_PUT32(v) do { int _v = (int)(v); memcpy(b + n, &_v, 4); n += 4; } while (0)
+
+    b[n++]=0x50;                                                  /* push rax             */
+    b[n++]=0x8B; b[n++]=0x86; REAW_PUT32(REAW_OFF_CHARAID);       /* mov eax,[rsi+0xC00]  */
+    for (i = 0; i < (int)(sizeof(g_reaw_ids)/sizeof(g_reaw_ids[0])); i++) {
+        b[n++]=0x83; b[n++]=0xF8; b[n++]=(unsigned char)g_reaw_ids[i];  /* cmp eax,id     */
+        b[n++]=0x74; jf[nj++]=n++;                                /* je force             */
+    }
+    b[n++]=0x58;                                                  /* pop rax              */
+    memcpy(b + n, orig, sizeof(orig)); n += (int)sizeof(orig);    /* stolen: mov ecx,[..] */
+    rel = (long long)(site + sizeof(orig)) - (long long)(stub + n + 5);
+    b[n++]=0xE9; memcpy(b + n, &rel, 4); n += 4;                  /* jmp back             */
+
+    force_at = n;                                                 /* force:               */
+    for (i = 0; i < nj; i++) b[jf[i]] = (unsigned char)(force_at - (jf[i] + 1));
+    b[n++]=0xF0; b[n++]=0x48; b[n++]=0xFF; b[n++]=0x05;
+    REAW_PUT32(REAW_CNT_FORCED - (n + 4));                        /* lock inc [rip+cnt]   */
+    b[n++]=0x58;                                                  /* pop rax              */
+    b[n++]=0xB9; REAW_PUT32(REAW_FORM_REV);                       /* mov ecx,2            */
+    rel = (long long)(site + sizeof(orig)) - (long long)(stub + n + 5);
+    b[n++]=0xE9; memcpy(b + n, &rel, 4); n += 4;                  /* jmp back             */
+
+#undef REAW_PUT32
+
+    if (n > REAW_CNT_FORCED) {
+        log_line("REAWAKEN: stub is %d bytes, would overwrite its counter -- skipped", n);
+        return;
+    }
+    memcpy(stub, b, (size_t)n);
+    FlushInstructionCache(GetCurrentProcess(), stub, (size_t)n);
+
+    rel = (long long)stub - (long long)(site + 5);
+    if (rel > 0x7FFFFFFFLL || rel < -0x80000000LL) {
+        log_line("REAWAKEN: trampoline out of rel32 range -- skipped"); return;
+    }
+    if (!VirtualProtect(site, sizeof(orig), PAGE_EXECUTE_READWRITE, &old)) {
+        log_line("REAWAKEN: VirtualProtect failed at RVA 0x%X", REAW_HOOK_RVA); return;
+    }
+    site[0] = 0xE9; memcpy(site + 1, &rel, 4);
+    for (i = 5; i < (int)sizeof(orig); i++) site[i] = 0x90;
+    VirtualProtect(site, sizeof(orig), old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof(orig));
+
+    g_reaw_cave = stub;
+    CreateThread(NULL, 0, reaw_watch, NULL, 0, NULL);
+    log_line("REAWAKEN: Reawakening Battle ON -- pl001/pl003/pl020/pl036 start the match "
+             "already Reawakened (RVA 0x%X hooked, %d-byte stub at %p)",
+             REAW_HOOK_RVA, n, (void*)stub);
+
+    if (REAWAKEN_POOL_TAG) {
+        int before = g_issuer;
+        g_issuer += REAWAKEN_POOL_TAG;
+        log_line("REAWAKEN: matchmaking issuer %d -> %d -- this mode simulates a different "
+                 "fight from a stock patched client, so it gets its own pool. Every player "
+                 "must run this same DLL.", before, g_issuer);
+    } else {
+        log_line("REAWAKEN: pool tag disabled -- this build shares the normal matchmaking "
+                 "pool, which desyncs against anyone not running it");
+    }
+}
+
 static DWORD WINAPI worker(LPVOID u)
 {
     (void)u;
@@ -987,6 +1175,10 @@ static DWORD WINAPI worker(LPVOID u)
     if (ENABLE_ROOM_RESULT_MENU) { patch_room_result_menu(); patch_room_rematch_wait(); }
     else log_line("ROOMRESULT: DISABLED at build time -- a room match still ends with "
                   "no menu and drops back to the room on a timer");
+    if (ENABLE_REAWAKEN_BATTLE) patch_reawaken_battle();
+    else log_line("REAWAKEN: DISABLED at build time -- Reawakenings use their stock "
+                  "triggers (build with -DENABLE_REAWAKEN_BATTLE=1 for the "
+                  "Reawakening Battle game mode's loader)");
     for (int i=0;i<600;i++){ int r=try_install(); if(r==1)return 0; if(r<0)return 0; Sleep(500); }
     log_line("ERROR: steam_api64/matchmaking never appeared -- is this the game process?");
     return 0;

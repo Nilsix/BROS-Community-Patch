@@ -510,7 +510,16 @@ try:
         match code so only players on the SAME patch version + build match.
         Vanilla players have no loader and are excluded automatically."""
         import zlib
+        # A game mode may ship its OWN loader, for a mechanic that is an exe hook
+        # rather than data. When the selected mode has one it wins; it is this
+        # same source built with that mode's flag, so it carries every patch the
+        # normal loader carries. See GameModes/<mode>/README.md.
         src = os.path.join(BASE_DIR, "Files", "Matchmaking", "dinput8.dll")
+        if gameMode != "DEFAULT":
+            modeLoader = os.path.join(BASE_DIR, "GameModes", gameMode, "dinput8.dll")
+            if os.path.exists(modeLoader):
+                src = modeLoader
+                print(f"[matchmaking] game mode '{gameMode}' ships its own loader")
         try:
             shutil.copy(src, os.path.join(target_path, "dinput8.dll"))
         except Exception as e:
@@ -931,17 +940,27 @@ try:
             gameMode = "SuddenDeath"
         actualiseGameModeButtons()
 
+    def reawakeningBattleFunc():
+        global gameMode
+        if gameMode == "ReawakeningBattle":
+            gameMode = "DEFAULT"
+        else:
+            gameMode = "ReawakeningBattle"
+        actualiseGameModeButtons()
+
     def actualiseGameModeButtons():
         baseOnlyButton.config(text=f'Base Only : (Currently {"ON" if gameMode == "BaseOnly" else "OFF"})')
         instantEvoAndSublimation.config(text=f'Instant Evo and Sublimation : (Currently {"ON" if gameMode == "InstantEvoAndSublimation" else "OFF"})')
         eightKonpakus.config(text=f'8 Konpakus : (Currently {"ON" if gameMode == "EightKonpakus" else "OFF"})')
         extraKonpaku.config(text=f'Extra Konpaku : (Currently {"ON" if gameMode == "ExtraKonpaku" else "OFF"})')
         suddenDeath.config(text=f'Sudden Death : (Currently {"ON" if gameMode == "SuddenDeath" else "OFF"})')
+        reawakeningBattle.config(text=f'Reawakening Battle : (Currently {"ON" if gameMode == "ReawakeningBattle" else "OFF"})')
         set_toggle_visual(baseOnlyButton, gameMode == "BaseOnly")
         set_toggle_visual(instantEvoAndSublimation, gameMode == "InstantEvoAndSublimation")
         set_toggle_visual(eightKonpakus, gameMode == "EightKonpakus")
         set_toggle_visual(extraKonpaku, gameMode == "ExtraKonpaku")
         set_toggle_visual(suddenDeath, gameMode == "SuddenDeath")
+        set_toggle_visual(reawakeningBattle, gameMode == "ReawakeningBattle")
 
     def unlockDangaiIchigo():
         result = messagebox.askyesno("Unlock Dangai Ichigo", "Unlocking Dangai Ichigo this way will reset your settings and ranked progress , are you sure you want to continue?")
@@ -1147,12 +1166,19 @@ try:
         command=suddenDeathFunc,
         tooltip="Toggle Sudden Death mode."
     )
+    reawakeningBattle = mkbutton(
+        gameModesInner,
+        text=f'Reawakening Battle : (Currently {"ON" if gameMode == "ReawakeningBattle" else "OFF"})',
+        command=reawakeningBattleFunc,
+        tooltip="Every character who owns a Reawakening starts the match already in it, on 10 Konpaku. Ships its own loader and its own online pool."
+    )
     teamBattleButton.pack(pady=paddingYvalue, fill=X)
     instantEvoAndSublimation.pack(pady=paddingYvalue, fill=X)
     baseOnlyButton.pack(pady=paddingYvalue, fill=X)
     eightKonpakus.pack(pady=paddingYvalue, fill=X)
     extraKonpaku.pack(pady=paddingYvalue, fill=X)
-    suddenDeath.pack(pady=(paddingYvalue,0), fill=X)
+    suddenDeath.pack(pady=paddingYvalue, fill=X)
+    reawakeningBattle.pack(pady=(paddingYvalue,0), fill=X)
     gameModesOuter.pack(fill=X, pady=(0,7))
     set_toggle_visual(teamBattleButton, config["TEAM_BATTLE"] == "ON")
 
