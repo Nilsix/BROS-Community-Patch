@@ -27,6 +27,9 @@
  *      patch_room_result_menu   room match ends on the free-match result menu
  *      patch_room_rematch_wait  a split choice falls back to the room in 1 s, not 120
  *      patch_reawaken_battle    the Reawakeners start the match Reawakened [OFF by default]
+ *      patch_fast_boot          boot skips the clickable auto-save notice
+ *      patch_skip_logos         boot skips the four publisher logo animations
+ *      patch_boot_training      boot lands on Training, or on the room-match menu [OFF by default]
  *  Rebuild with build_dinput8.bat and check patch_ranked.log for one line
  *  per patch. See the header of each patch_* function for its anchors.
  * ---------------------------------------------------------------------
@@ -60,6 +63,20 @@
 #define ENABLE_AIZEN_KIKON_COUNTER 0   /* 2026-08-06: off, precaution (see header) */
 #define ENABLE_AIZEN_FLAMECOST     0   /* 2026-08-06: off, CRASHES (see header)    */
 #define ENABLE_ROOM_RESULT_MENU    1   /* room match ends on a result menu          */
+
+/* ---- boot shortcuts, ported from the dev environment 2026-08-26 --------
+   FAST_BOOT and SKIP_LOGOS are ON here: they are what makes a normal launch
+   open on the title screen. BOOT_TRAINING and BOOT_ROOMMATCH are OFF and each
+   ships as its own loader under GameModes/, selected by its Quick Launch
+   script. None of them changes any simulation, so none carries a pool tag. */
+#define ENABLE_FAST_BOOT           1   /* skip the AUTO_SAVE notice at boot */
+#define ENABLE_SKIP_LOGOS          1   /* skip the four publisher logos     */
+#ifndef ENABLE_BOOT_TRAINING
+#define ENABLE_BOOT_TRAINING       0   /* boot into the Training character select */
+#endif
+#ifndef ENABLE_BOOT_ROOMMATCH
+#define ENABLE_BOOT_ROOMMATCH      0   /* boot into the online room-match menu */
+#endif
 
 /* "Reawakening Battle" -- a TEST-ONLY game mode, off in the shipped loader.
    The launcher installs GameModes/ReawakeningBattle/dinput8.dll, which IS this
@@ -1144,6 +1161,607 @@ static void patch_reawaken_battle(void)
     }
 }
 
+/* =====================================================================
+ *  FAST BOOT -- drop the "This game auto-saves." notice
+ * ---------------------------------------------------------------------
+ *  The boot flow is one function, SLogo::Update (VA 0x14074F810, 3036 B),
+ *  a 16-state machine on [this+0xD0] dispatched through a trailing jump
+ *  table at VA 0x1407503AC (16 x u32, each an offset from the image base).
+ *  The state names are the strings at 0x141499078..0x141499130:
+ *
+ *      CESA_jp / movie_BNE_logo / movie_TAMSOFT_logo / logo_all
+ *          the four logo entries, a 4 x 0x28 table at 0x141CF3520
+ *          { u32 isMovie; char name[0x18]; float frames; }
+ *      TITLE_DIALOGUE2   first-boot language/settings dialog
+ *      INIT_OPTION / INIT_FONT
+ *      AUTO_SAVE         <-- the screen we are removing
+ *
+ *  State 8 (VA 0x14074FB9E) is "logos finished". If the first-boot flag at
+ *  0x141CDE6EC is clear it jumps straight to state 13; otherwise it runs
+ *  TITLE_DIALOGUE2 -> 9 -> INIT_OPTION -> 11 -> (INIT_FONT ->) 12 -> 13.
+ *  BOTH paths land on 13.
+ *
+ *  State 13 (VA 0x1407501DB) builds the modal from CommonText key
+ *  "AUTO_SAVE" -- the exact en_US record is "This game auto-saves.\n..." --
+ *  hands it to the dialog factory at 0x140266FA0 with kind 2, then advances
+ *  to state 14, which spins until the dialog count at 0x141CEA210 drops to
+ *  zero, i.e. until the player clicks Close. State 15 (VA 0x140750310) is
+ *  the terminal state: it returns 1, which is what tells the scene manager
+ *  the logo scene is over and the title screen may load.
+ *
+ *  So the whole screen is one jump-table entry. Repoint slot 13 at state
+ *  15's handler and every path into 13 falls straight out of the scene --
+ *  no dialog is ever constructed, so state 14 has nothing to wait for and
+ *  is skipped with it. Nothing else reads slot 13, and the notice is a
+ *  message box only: it neither initialises nor touches the save system.
+ *
+ *  Guarded on slots 12..15 (16 bytes), which pins the table's identity;
+ *  only slot 13 is written.
+ *
+ *  Found statically on the 2025-12-04 build (28,283,464 B) and CONFIRMED IN
+ *  GAME 2026-08-26: the notice is gone and boot runs logos -> title with no
+ *  click. */
+#define FASTBOOT_JMPTBL_RVA 0x7503AC
+#define FASTBOOT_SLOT13_RVA (FASTBOOT_JMPTBL_RVA + 13 * 4)
+
+static void patch_fast_boot(void)
+{
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    if (!mod) return;
+    unsigned char* p = mod + FASTBOOT_JMPTBL_RVA + 12 * 4;
+
+    /* slots 12,13,14,15 = 0x7501BB, 0x7501DB, 0x74FFC1, 0x750310 */
+    static const unsigned char orig[16] = {0xBB,0x01,0x75,0x00, 0xDB,0x01,0x75,0x00,
+                                           0xC1,0xFF,0x74,0x00, 0x10,0x03,0x75,0x00};
+    /* slot 13 -> state 15's handler */
+    static const unsigned char repl[4]  = {0x10,0x03,0x75,0x00};
+
+    if (memcmp(p + 4, repl, sizeof(repl)) == 0) {
+        log_line("FASTBOOT: slot 13 already points at state 15 -- nothing to do");
+        return;
+    }
+    if (memcmp(p, orig, sizeof(orig)) != 0) {
+        log_line("FASTBOOT: SLogo::Update jump table not as expected at RVA 0x%X "
+                 "(game updated?) -- skipped, the auto-save notice still shows",
+                 FASTBOOT_JMPTBL_RVA);
+        return;
+    }
+    DWORD old;
+    if (VirtualProtect(p + 4, sizeof(repl), PAGE_EXECUTE_READWRITE, &old)) {
+        memcpy(p + 4, repl, sizeof(repl));
+        VirtualProtect(p + 4, sizeof(repl), old, &old);
+        FlushInstructionCache(GetCurrentProcess(), p + 4, sizeof(repl));
+        log_line("FASTBOOT: applied at RVA 0x%X -- SLogo state 13 (AUTO_SAVE notice) "
+                 "now runs state 15 (scene done); boot goes logos -> title with no click",
+                 FASTBOOT_SLOT13_RVA);
+    } else {
+        log_line("FASTBOOT: VirtualProtect failed at RVA 0x%X", FASTBOOT_SLOT13_RVA);
+    }
+}
+
+/* ============ PART 15: BOOT STRAIGHT INTO THE TRAINING CHARACTER SELECT =====
+ *  WHAT IT DOES
+ *  ------------
+ *  Boot goes logos -> Training character select, skipping the title screen and
+ *  the menu walk.
+ *
+ *  ! FIRST ATTEMPT WAS WRONG, and the log said "applied". Recorded here because
+ *  the failure is instructive. The SLogo owner (0x140750B10) contains two
+ *  `lea rdx,"JUMP_Title"` sites, at RVA 0x750BCB and 0x750C2C, and repointing
+ *  both did nothing at all: they sit on the branch taken when the scene already
+ *  has an explicit command pending in [SLogo+0xB0], which never happens on a
+ *  normal boot. Patching a site and watching a log line confirm it is not the
+ *  same as patching the site that RUNS.
+ *
+ *  THE PATH THAT ACTUALLY RUNS
+ *  ---------------------------
+ *      0x140750B66  je 0x140750C66          ; [SLogo+0xB0] empty -> normal boot
+ *      0x140750C69  call 0x14074F810        ; SLogo::Update
+ *      0x140750C70  je  ...                 ; returned 0 -> nothing to do
+ *      0x140750C72  mov rax,[rdi]
+ *      0x140750C75  mov rbx,[rax+0x88]      ; flow vtable slot 0x88
+ *      0x140750C83  lea rdx,[rip+0xD483FE]  ; "LOGO_NEXT"
+ *      0x140750C9C  call rbx
+ *
+ *  So the boot does not name its destination at all. It raises the EVENT
+ *  `LOGO_NEXT`, and the flow graph -- built by the 32 KB function at
+ *  0x140866050 -- is what maps that event to the Title state. Slot 0x88 is the
+ *  generic "send this request by name" method; SLogo state 10 uses the same one
+ *  for `INIT_OPTION` and `INIT_FONT`.
+ *
+ *  HOW
+ *  ---
+ *  Rather than rebuild a graph edge, send a scene JUMP from that site instead
+ *  of the event. `0x14089E310` is the flow's "jump to scene by name" entry --
+ *  a free function, in no vtable, taking exactly (rcx = flow, rdx = &tsd string)
+ *  which is the signature `call rbx` is already set up for. It lazily builds its
+ *  singleton at 0x141CFBD18, so it needs no other state.
+ *
+ *  Two edits, no trampoline, and the site's own string construction is reused:
+ *
+ *      RVA 0x750C72  48 8B 07 48 8B 98 88 00 00 00   mov rax,[rdi]
+ *                                                     mov rbx,[rax+0x88]
+ *                ->  48 BB <mod+0x89E310>             mov rbx, dispatcher
+ *
+ *      RVA 0x750C86  the lea's disp32:  "LOGO_NEXT" -> "JUMP_TrainingCharacterSelect"
+ *
+ *  Both are 10 bytes and 4 bytes exactly, so nothing moves. `rax` is dead after
+ *  the replaced pair: the only reader would be the string constructor call at
+ *  0x750C8F, which clobbers it as its own return value.
+ *
+ *  The imm64 is written from the RUNTIME module base, so this is ASLR-correct;
+ *  the guard pins all 44 bytes of the window before anything is touched.
+ *
+ *  ! SECOND CORRECTION -- the jump worked, the MODE did not. With only the two
+ *  edits above the game left the logos and landed on the OFFLINE VERSUS
+ *  character select. The character select is one shared scene; which mode it
+ *  runs in comes from a global setup object, and the jump alone does not set it.
+ *
+ *  The normal issuer (0x1406EC3E3, reached when the menu selection is 6) shows
+ *  exactly what is missing:
+ *
+ *      0x1406EC3F0  mov rax,[0x141CFBAB8]       ; setup singleton, lazily made
+ *                   ...if NULL: new(0x4D0), ctor 0x14082CF10, store the RETURN
+ *      0x1406EC41B  mov dword [rax+0x228], 6    ; <-- the mode
+ *      0x1406EC42C  lea rdx,"JUMP_TrainingCharacterSelect"
+ *
+ *  `+0x228 = 6` is the whole difference. It is the only write to that field in
+ *  the 11,401-byte issuer, and it sits immediately before the Training jump.
+ *
+ *  The singleton is created on demand, so at logo time it may still be NULL --
+ *  which is why this cannot be a byte patch. `call rbx` is therefore pointed at
+ *  a C function in this DLL instead of straight at the dispatcher: it takes the
+ *  site's own (rcx = flow, rdx = &string), does the singleton-and-mode dance the
+ *  way the issuer does, then tail-calls the real dispatcher. A plain C function
+ *  is already (rcx, rdx) in the MS x64 ABI, preserves the non-volatiles the site
+ *  relies on (rdi survives to 0x140750C9E), and the frame that just called the
+ *  string constructor at 0x750C8F has the shadow space for it.
+ * ==================================================================== */
+#define BOOTTR_WINDOW_RVA        0x750C72u   /* mov rax,[rdi]; mov rbx,[rax+0x88] */
+#define BOOTTR_DISPATCH_RVA      0x89E310u   /* flow "jump to scene by name"      */
+#define BOOTTR_JUMP_TRAINING_RVA 0x148EB78u  /* "JUMP_TrainingCharacterSelect"    */
+#define BOOTTR_JUMP_ROOM_RVA     0x14A0848u  /* "JUMP_RoomMatchMenu"              */
+#define BOOTTR_ONLINE_SEL_RVA    0x1CDF2E8u  /* 0 rank, 1 room match, 2 free      */
+#define BOOTTR_ONLINE_SEL_ROOM   1
+
+#if ENABLE_BOOT_ROOMMATCH
+#define BOOTTR_DEST_RVA  BOOTTR_JUMP_ROOM_RVA
+#define BOOTTR_DEST_NAME "JUMP_RoomMatchMenu"
+#else
+#define BOOTTR_DEST_RVA  BOOTTR_JUMP_TRAINING_RVA
+#define BOOTTR_DEST_NAME "JUMP_TrainingCharacterSelect"
+#endif
+#define BOOTTR_SETUP_PTR_RVA     0x1CFBAB8u  /* the scene-setup singleton         */
+#define BOOTTR_SETUP_SIZE        0x4D0u      /* what the issuer allocates for it  */
+#define BOOTTR_SETUP_CTOR_RVA    0x82CF10u   /* its constructor; returns the obj  */
+#define BOOTTR_NEW_RVA           0x10A1038u  /* the allocator the issuer calls    */
+#define BOOTTR_MODE_OFF          0x228       /* setup+0x228 = the mode            */
+#define BOOTTR_MODE_TRAINING     6           /* what the Training issuer stores   */
+
+static unsigned char* g_boottr_mod;
+
+/* Called INSTEAD of the flow's vtable slot 0x88, with the site's own arguments.
+   Sets the mode the way 0x1406EC3E3 does, then hands the command to the real
+   dispatcher. Runs once, on the game thread, at the end of the logo scene. */
+static void boottr_handoff(void* flow, void* cmd)
+{
+    unsigned char* mod  = g_boottr_mod;
+    void**         slot = (void**)(mod + BOOTTR_SETUP_PTR_RVA);
+    void*          o    = *slot;
+    static int     said = 0;
+
+    if (!o) {
+        void* raw = ((void* (*)(unsigned long long))(mod + BOOTTR_NEW_RVA))
+                        (BOOTTR_SETUP_SIZE);
+        if (raw) {
+            o = ((void* (*)(void*))(mod + BOOTTR_SETUP_CTOR_RVA))(raw);
+            *slot = o;
+        }
+    }
+#if ENABLE_BOOT_ROOMMATCH
+    /* The room-match issuer (0x1407E6847) writes no mode at all -- the online
+       menu has already chosen by then, through the selector this sets. */
+    (void)o;
+    *(int*)(mod + BOOTTR_ONLINE_SEL_RVA) = BOOTTR_ONLINE_SEL_ROOM;
+    if (!said) { said = 1;
+        log_line("BOOTTRAIN: online selector at RVA 0x%X set to %d (room match) "
+                 "before the jump", BOOTTR_ONLINE_SEL_RVA, BOOTTR_ONLINE_SEL_ROOM); }
+#else
+    if (o) {
+        *(int*)((unsigned char*)o + BOOTTR_MODE_OFF) = BOOTTR_MODE_TRAINING;
+        if (!said) { said = 1;
+            log_line("BOOTTRAIN: setup singleton %p, mode +0x%X set to %d (Training) "
+                     "before the jump", o, BOOTTR_MODE_OFF, BOOTTR_MODE_TRAINING); }
+    } else if (!said) { said = 1;
+        log_line("BOOTTRAIN: setup singleton is NULL and could not be created -- "
+                 "jumping without setting the mode, expect offline versus");
+    }
+#endif
+    ((void (*)(void*, void*))(mod + BOOTTR_DISPATCH_RVA))(flow, cmd);
+}
+
+
+static void patch_boot_training(void)
+{
+    /* 0x750C72 .. 0x750C9E -- the whole LOGO_NEXT handoff */
+    static const unsigned char orig[44] = {
+        0x48,0x8B,0x07,                          /* mov rax,[rdi]            */
+        0x48,0x8B,0x98,0x88,0x00,0x00,0x00,      /* mov rbx,[rax+0x88]       */
+        0x49,0xC7,0xC0,0xFF,0xFF,0xFF,0xFF,      /* mov r8,-1                */
+        0x48,0x8D,0x15,0xFE,0x83,0xD4,0x00,      /* lea rdx,"LOGO_NEXT"      */
+        0x48,0x8D,0x4C,0x24,0x20,                /* lea rcx,[rsp+0x20]       */
+        0xE8,0x4C,0xD3,0x93,0xFF,                /* call <string ctor>       */
+        0x48,0x8D,0x54,0x24,0x20,                /* lea rdx,[rsp+0x20]       */
+        0x48,0x8B,0xCF,                          /* mov rcx,rdi              */
+        0xFF,0xD3                                /* call rbx                 */
+    };
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    unsigned char* p;
+    unsigned long long disp64;
+    long long rel;
+    int  disp32;
+    DWORD old;
+
+    if (!mod) return;
+    p = mod + BOOTTR_WINDOW_RVA;
+
+    if (p[0] == 0x48 && p[1] == 0xBB) {
+        log_line("BOOTTRAIN: already applied -- nothing to do");
+        return;
+    }
+    if (memcmp(p, orig, sizeof(orig)) != 0) {
+        log_line("BOOTTRAIN: the LOGO_NEXT handoff at RVA 0x%X is not as expected "
+                 "(game updated?) -- skipped, boot still goes to the title screen",
+                 BOOTTR_WINDOW_RVA);
+        return;
+    }
+
+    /* the lea is at window+0x11, its disp32 at window+0x14; the instruction
+       ends at window+0x18, which is what a rip-relative operand is measured
+       from */
+    rel = (long long)(mod + BOOTTR_DEST_RVA) - (long long)(p + 0x18);
+    if (rel > 0x7FFFFFFFLL || rel < -0x80000000LL) {
+        log_line("BOOTTRAIN: " BOOTTR_DEST_NAME " out of rel32 range -- skipped");
+        return;
+    }
+    disp32  = (int)rel;
+    g_boottr_mod = mod;
+    disp64  = (unsigned long long)(void*)&boottr_handoff;
+
+    if (!VirtualProtect(p, sizeof(orig), PAGE_EXECUTE_READWRITE, &old)) {
+        log_line("BOOTTRAIN: VirtualProtect failed at RVA 0x%X", BOOTTR_WINDOW_RVA);
+        return;
+    }
+    p[0] = 0x48; p[1] = 0xBB;                 /* mov rbx, imm64 */
+    memcpy(p + 2, &disp64, 8);
+    memcpy(p + 0x14, &disp32, 4);             /* the lea's target */
+    VirtualProtect(p, sizeof(orig), old, &old);
+    FlushInstructionCache(GetCurrentProcess(), p, sizeof(orig));
+
+    log_line("BOOTTRAIN: LOGO_NEXT handoff at RVA 0x%X rewritten -- the logo scene now "
+             "calls %p, which prepares the mode and then sends " BOOTTR_DEST_NAME
+             " to the dispatcher at %p, instead of "
+             "raising LOGO_NEXT through vtable slot 0x88",
+             BOOTTR_WINDOW_RVA, (void*)&boottr_handoff,
+             (void*)(mod + BOOTTR_DISPATCH_RVA));
+}
+
+/* ================= SKIP THE BOOT LOGOS ===============================
+ *  Bandai Namco, Tamsoft, and the licensor board after them. With this and
+ *  FAST BOOT the game opens on the title screen.
+ *
+ *  The four entries are a table at 0x141CF3520, stride 0x28, built by the
+ *  static initialiser at 0x140048210:
+ *
+ *      struct { u32 isMovie; char name[0x18]; float frames; };   // 0x28
+ *
+ *      0  CESA_jp              image  30 frames   (Japan only -- SLogo state 1
+ *                                                  compares the name and skips)
+ *      1  movie_BNE_logo       movie  45
+ *      2  movie_TAMSOFT_logo   movie   0.0
+ *      3  logo_all             image  60
+ *
+ *  `isMovie` entries ignore the frame count and wait for playback state 5;
+ *  image entries wait out `frames` in SLogo state 6.
+ *
+ *  SLogo state 1 is the per-entry loader, and it opens with its own bound
+ *  check -- `[rsi+0xD4]` is the entry index:
+ *
+ *      0x14074F977  movsxd rax,[rsi+0xD4]
+ *      0x14074F97E  cmp    eax, 3
+ *      0x14074F981  ja     0x14074FB94      ; -> mov [rsi+0xD0], 8 = logos done
+ *
+ *  Make that branch unconditional and the FIRST entry into state 1 lands on
+ *  "logos finished". State 0 falls through into state 1, so this happens on the
+ *  very first frame of the scene: nothing is ever loaded, no movie is opened, no
+ *  texture is bound. Cheaper and safer than cutting the durations, which would
+ *  still load and play everything.
+ *
+ *      0F 87 0D 02 00 00   ja  0x14074FB94
+ *   -> E9 0E 02 00 00 90   jmp 0x14074FB94 ; nop
+ *
+ *  Six bytes, in place, and the `nop` keeps the instruction boundary at
+ *  0x14074F987 for anything that branches there.
+ *
+ *  From state 8 the flow is unchanged: the first-boot fork, then the AUTO_SAVE
+ *  slot (which FAST BOOT points at the terminal state), then the LOGO_NEXT
+ *  handoff. So this composes with both of the other boot patches.
+ *
+ *  Guarded on the whole 16-byte movsxd+cmp+ja opening, which occurs once.
+ *
+ *  PART 2 -- the fade, which is what is left playing before the title.
+ *  ------------------------------------------------------------------
+ *  State 0 still ran. It is nothing but the fade object's setup:
+ *
+ *      0x14074F944  mov rcx,[rsi+0x120]     ; the scene's fade object
+ *                   ...zero its fields, set 1.0f
+ *      0x14074F963  and dword [rcx], ~4
+ *      0x14074F966  or  dword [rcx], 0xB    ; <-- turns it ON
+ *      0x14074F969  xorps xmm1,xmm1
+ *      0x14074F96C  call 0x1400EE0F0        ; the fade/anim updater
+ *      0x14074F971  inc [rsi+0xD0]
+ *
+ *  and the owner ticks that same object every frame (`0x140750CAF`). With the
+ *  logos gone that fade is the only thing the scene still draws, and it is the
+ *  short animation that plays just before the title screen.
+ *
+ *  Point jump-table slot 0 at 0x14074FB94 -- `mov [rsi+0xD0], 8`, which falls
+ *  straight into state 8's body. The scene then never touches the fade object
+ *  at all, and the whole logo scene is two frames that render nothing:
+ *
+ *      frame 1   slot 0 -> state 8 -> the first-boot fork -> state 13
+ *      frame 2   slot 13 -> (fast boot) state 15 -> return 1 -> LOGO_NEXT
+ *
+ *  Leaving the object unconfigured is the SAFE direction: state 0's `or 0xB`
+ *  is what activates it, so not running that leaves it inactive rather than
+ *  leaving a black overlay on screen.
+ *
+ *      jump table RVA 0x7503AC, slot 0:  44 F9 74 00 -> 94 FB 74 00
+ * ==================================================================== */
+#define SKIPLOGO_GUARD_RVA  0x74F977u
+#define SKIPLOGO_JA_OFF     0x0A          /* the ja, inside that window */
+#define SKIPLOGO_JMPTBL_RVA 0x7503ACu     /* SLogo::Update's 16-slot table */
+
+static void patch_skip_logo_fade(void);
+
+static void patch_skip_logos(void)
+{
+    static const unsigned char orig[16] = {
+        0x48,0x63,0x86,0xD4,0x00,0x00,0x00,   /* movsxd rax,[rsi+0xD4] */
+        0x83,0xF8,0x03,                       /* cmp    eax,3          */
+        0x0F,0x87,0x0D,0x02,0x00,0x00         /* ja     0x14074FB94    */
+    };
+    static const unsigned char repl[6] = {
+        0xE9,0x0E,0x02,0x00,0x00,             /* jmp    0x14074FB94    */
+        0x90                                  /* nop                   */
+    };
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    unsigned char* p;
+    DWORD old;
+
+    if (!mod) return;
+    p = mod + SKIPLOGO_GUARD_RVA;
+
+    if (memcmp(p + SKIPLOGO_JA_OFF, repl, sizeof(repl)) == 0) {
+        log_line("SKIPLOGO: already applied -- nothing to do");
+        return;
+    }
+    if (memcmp(p, orig, sizeof(orig)) != 0) {
+        log_line("SKIPLOGO: SLogo state 1 does not open as expected at RVA 0x%X "
+                 "(game updated?) -- skipped, the logos still play",
+                 SKIPLOGO_GUARD_RVA);
+        return;
+    }
+    if (!VirtualProtect(p + SKIPLOGO_JA_OFF, sizeof(repl),
+                        PAGE_EXECUTE_READWRITE, &old)) {
+        log_line("SKIPLOGO: VirtualProtect failed at RVA 0x%X",
+                 SKIPLOGO_GUARD_RVA + SKIPLOGO_JA_OFF);
+        return;
+    }
+    memcpy(p + SKIPLOGO_JA_OFF, repl, sizeof(repl));
+    VirtualProtect(p + SKIPLOGO_JA_OFF, sizeof(repl), old, &old);
+    FlushInstructionCache(GetCurrentProcess(), p + SKIPLOGO_JA_OFF, sizeof(repl));
+    log_line("SKIPLOGO: applied at RVA 0x%X -- SLogo state 1's bound check is now "
+             "unconditional, so all four boot logos (CESA_jp, movie_BNE_logo, "
+             "movie_TAMSOFT_logo, logo_all) are skipped without being loaded",
+             SKIPLOGO_GUARD_RVA + SKIPLOGO_JA_OFF);
+
+    patch_skip_logo_fade();
+}
+
+/* Slot 0 of SLogo::Update's jump table -> "mov [rsi+0xD0], 8", so the scene
+   never configures or starts its fade. See PART 2 in the block above. */
+static void patch_skip_logo_fade(void)
+{
+    static const unsigned char slot0_orig[4] = {0x44,0xF9,0x74,0x00};  /* 0x74F944 */
+    static const unsigned char slot8_pin[4]  = {0x9E,0xFB,0x74,0x00};  /* 0x74FB9E */
+    static const unsigned char slot0_repl[4] = {0x94,0xFB,0x74,0x00};  /* 0x74FB94 */
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    unsigned char* tbl;
+    DWORD old;
+
+    if (!mod) return;
+    tbl = mod + SKIPLOGO_JMPTBL_RVA;
+
+    if (memcmp(tbl, slot0_repl, 4) == 0) {
+        log_line("SKIPLOGO/fade: slot 0 already points at state 8 -- nothing to do");
+        return;
+    }
+    /* slot 8 pins the table's identity alongside slot 0 */
+    if (memcmp(tbl, slot0_orig, 4) != 0 || memcmp(tbl + 8 * 4, slot8_pin, 4) != 0) {
+        log_line("SKIPLOGO/fade: SLogo jump table not as expected at RVA 0x%X "
+                 "(game updated?) -- skipped, the pre-title fade still plays",
+                 SKIPLOGO_JMPTBL_RVA);
+        return;
+    }
+    if (!VirtualProtect(tbl, 4, PAGE_EXECUTE_READWRITE, &old)) {
+        log_line("SKIPLOGO/fade: VirtualProtect failed at RVA 0x%X",
+                 SKIPLOGO_JMPTBL_RVA);
+        return;
+    }
+    memcpy(tbl, slot0_repl, 4);
+    VirtualProtect(tbl, 4, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), tbl, 4);
+    log_line("SKIPLOGO/fade: slot 0 repointed to state 8 -- the logo scene no longer "
+             "configures or starts its fade object, so nothing animates before the "
+             "title screen; the whole scene is now two frames that render nothing");
+}
+
+/* ================= PART 16: Kaiser level trace (DIAGNOSTIC) ==========
+ *  Yhwach's Kaiser level is the float at fighter+0x1A40, and the number the
+ *  player actually sees is pushed to the HUD by
+ *  ActionCharaUniqueUI_Pl52::SetLevel -- vtable slot 24, RVA 0x21C910, the one
+ *  method that class has beyond the shared family:
+ *
+ *      mov rax,[rcx+0x10]        ; the Work object
+ *      cmp [rax+0x2D0],edx       ; +0x2D0 is the level
+ *      je  .same
+ *      mov [rax+0x2D0],edx
+ *
+ *  It runs every frame for Yhwach and nobody else, so hooking its entry gives
+ *  the level's timeline for free -- no fighter pointer to resolve, no character
+ *  test to write.
+ *
+ *  WHY THIS EXISTS. Two in-game observations refused to add up. With a `-1`
+ *  AddUniqueVal on ct_evolve he ENDED A LEVEL DOWN after Awakening; with that
+ *  record removed he ends a level UP. The gap between the two runs is 2, and
+ *  the record is only worth 1 -- so either the record applies twice, or the
+ *  engine's grant is conditional and did not fire in the first run. Guessing a
+ *  third time is how you get a third wrong answer: this logs every step instead.
+ *
+ *  The stub touches NO register and leaves the flags correct, which is why it
+ *  needs no save/restore at all:
+ *
+ *      mov  [rip+level],edx      ; memory write, no scratch register
+ *      lock inc qword [rip+seq]  ; ditto
+ *      <the 10 stolen bytes, re-executed>   ; rax is set by the stolen mov,
+ *      jmp  back                            ; and the cmp re-sets the flags
+ *                                             the following `je` needs
+ * ==================================================================== */
+#define KTR_HOOK_RVA   0x21C910u    /* ActionCharaUniqueUI_Pl52::SetLevel  */
+#define KTR_FORM_RVA   0x471160u    /* the transform routine               */
+#define KTR_CHARA      0x34         /* pl052                               */
+#define KTR_LEVEL      0x80         /* dword: last level pushed to the HUD */
+#define KTR_SEQ        0x88         /* qword: SetLevel calls seen          */
+#define KTR_FORM       0x90         /* dword: last form requested          */
+#define KTR_FSEQ       0x98         /* qword: transforms seen              */
+#define KTR_STUB2      0x40         /* the form stub, inside the same cave */
+
+static unsigned char* g_ktr_cave = NULL;
+
+static DWORD WINAPI ktr_watch(LPVOID u)
+{
+    int level = -12345, form = -12345;
+    int lines = 0;
+    (void)u;
+    while (g_ktr_cave && lines < 400) {
+        long long ls = *(volatile long long*)(g_ktr_cave + KTR_SEQ);
+        long long fs = *(volatile long long*)(g_ktr_cave + KTR_FSEQ);
+        int l2 = *(volatile int*)(g_ktr_cave + KTR_LEVEL);
+        int f2 = *(volatile int*)(g_ktr_cave + KTR_FORM);
+        if (fs && f2 != form) {
+            static const char* nm[3] = {"base", "AWAKENING", "REAWAKENING"};
+            log_line("KAISER: >>> transform to form %d (%s) <<<",
+                     f2, (f2 >= 0 && f2 <= 2) ? nm[f2] : "?");
+            form = f2; lines++;
+        }
+        if (ls && l2 != level) {
+            if (level == -12345) log_line("KAISER: level starts at %d", l2);
+            else                 log_line("KAISER: level %d -> %d  (%+d)", level, l2, l2 - level);
+            level = l2; lines++;
+        }
+        Sleep(120);
+    }
+    return 0;
+}
+
+static void patch_kaiser_trace(void)
+{
+    /* SetLevel: mov rax,[rcx+0x10] / cmp [rax+0x2D0],edx  -- 10 bytes.
+       The stub writes only memory, so no register is disturbed, and the
+       re-executed cmp re-sets the flags the following `je` reads. */
+    static const unsigned char lv[10] =
+        {0x48,0x8B,0x41,0x10, 0x39,0x90,0xD0,0x02,0x00,0x00};
+    /* the transform routine: mov rax,rsp / mov [rax+0x18],rbx -- 7 bytes.
+       ⚠ That first instruction CAPTURES rsp, so the stub must not push
+       anything: one push and the function frames itself off a wrong rsp.
+       Only rax is touched, and the stolen mov puts it back. */
+    static const unsigned char fm[7] =
+        {0x48,0x8B,0xC4, 0x48,0x89,0x58,0x18};
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    unsigned char* site;
+    unsigned char* stub;
+    unsigned char  b[128];
+    int n, i, jskip;
+    long long rel;
+    DWORD old;
+
+    if (!mod) return;
+    if (memcmp(mod + KTR_HOOK_RVA, lv, sizeof(lv)) != 0 ||
+        memcmp(mod + KTR_FORM_RVA, fm, sizeof(fm)) != 0) {
+        log_line("KAISER: a trace site does not match (game updated?) -- trace skipped");
+        return;
+    }
+    stub = (unsigned char*)gauge_alloc_near(mod + KTR_FORM_RVA, 0x200);
+    if (!stub) { log_line("KAISER: no trampoline within +/-2GB -- trace skipped"); return; }
+    memset(stub, 0, 0x200);
+
+#define D32(o, at) do { int _d = (int)((o) - (at)); memcpy(b + n, &_d, 4); n += 4; } while (0)
+
+    /* ---- stub 1, at cave+0: the level ------------------------------- */
+    site = mod + KTR_HOOK_RVA; n = 0;
+    b[n++]=0x89; b[n++]=0x15; D32(KTR_LEVEL, n + 4);          /* mov [rip+level],edx */
+    b[n++]=0xF0; b[n++]=0x48; b[n++]=0xFF; b[n++]=0x05;
+    D32(KTR_SEQ, n + 4);                                      /* lock inc [rip+seq]  */
+    memcpy(b + n, lv, sizeof(lv)); n += (int)sizeof(lv);
+    rel = (long long)(site + sizeof(lv)) - (long long)(stub + n + 5);
+    b[n++]=0xE9; memcpy(b + n, &rel, 4); n += 4;
+    if (n > KTR_STUB2) { log_line("KAISER: level stub overruns -- skipped"); return; }
+    memcpy(stub, b, (size_t)n);
+
+    rel = (long long)stub - (long long)(site + 5);
+    if (!VirtualProtect(site, sizeof(lv), PAGE_EXECUTE_READWRITE, &old)) {
+        log_line("KAISER: VirtualProtect failed at RVA 0x%X", KTR_HOOK_RVA); return; }
+    site[0]=0xE9; memcpy(site + 1, &rel, 4);
+    for (i = 5; i < (int)sizeof(lv); i++) site[i] = 0x90;
+    VirtualProtect(site, sizeof(lv), old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof(lv));
+
+    /* ---- stub 2, at cave+0x40: the form ----------------------------- */
+    site = mod + KTR_FORM_RVA; n = 0;
+    b[n++]=0x8B; b[n++]=0x81;                                  /* mov eax,[rcx+0xC00] */
+    { int d = 0xC00; memcpy(b + n, &d, 4); n += 4; }
+    b[n++]=0x83; b[n++]=0xF8; b[n++]=KTR_CHARA;                /* cmp eax,0x34        */
+    b[n++]=0x75; jskip = n++;                                  /* jne .skip           */
+    b[n++]=0x89; b[n++]=0x15; D32(KTR_FORM, KTR_STUB2 + n + 4);/* mov [rip+form],edx  */
+    b[n++]=0xF0; b[n++]=0x48; b[n++]=0xFF; b[n++]=0x05;
+    D32(KTR_FSEQ, KTR_STUB2 + n + 4);                          /* lock inc [rip+fseq] */
+    b[jskip] = (unsigned char)(n - (jskip + 1));               /* .skip:              */
+    memcpy(b + n, fm, sizeof(fm)); n += (int)sizeof(fm);
+    rel = (long long)(site + sizeof(fm)) - (long long)(stub + KTR_STUB2 + n + 5);
+    b[n++]=0xE9; memcpy(b + n, &rel, 4); n += 4;
+    if (KTR_STUB2 + n > KTR_LEVEL) { log_line("KAISER: form stub overruns -- skipped"); return; }
+    memcpy(stub + KTR_STUB2, b, (size_t)n);
+    FlushInstructionCache(GetCurrentProcess(), stub, 0x200);
+
+    rel = (long long)(stub + KTR_STUB2) - (long long)(site + 5);
+    if (!VirtualProtect(site, sizeof(fm), PAGE_EXECUTE_READWRITE, &old)) {
+        log_line("KAISER: VirtualProtect failed at RVA 0x%X", KTR_FORM_RVA); return; }
+    site[0]=0xE9; memcpy(site + 1, &rel, 4);
+    for (i = 5; i < (int)sizeof(fm); i++) site[i] = 0x90;
+    VirtualProtect(site, sizeof(fm), old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof(fm));
+
+#undef D32
+
+    g_ktr_cave = stub;
+    *(int*)(stub + KTR_FORM) = -1;
+    CreateThread(NULL, 0, ktr_watch, NULL, 0, NULL);
+    log_line("KAISER: trace ON -- Yhwach's level (RVA 0x%X) and every transform "
+             "(RVA 0x%X) are logged, so the timeline names its own events. Cave %p",
+             KTR_HOOK_RVA, KTR_FORM_RVA, (void*)stub);
+}
+
 static DWORD WINAPI worker(LPVOID u)
 {
     (void)u;
@@ -1175,6 +1793,16 @@ static DWORD WINAPI worker(LPVOID u)
     if (ENABLE_ROOM_RESULT_MENU) { patch_room_result_menu(); patch_room_rematch_wait(); }
     else log_line("ROOMRESULT: DISABLED at build time -- a room match still ends with "
                   "no menu and drops back to the room on a timer");
+    if (ENABLE_FAST_BOOT) patch_fast_boot();
+    else log_line("FASTBOOT: DISABLED at build time -- boot still stops on the "
+                  "clickable auto-save notice");
+    if (ENABLE_SKIP_LOGOS) patch_skip_logos();
+    else log_line("SKIPLOGO: DISABLED at build time -- the four boot logos still "
+                  "play before the title screen");
+    if (ENABLE_BOOT_TRAINING || ENABLE_BOOT_ROOMMATCH) patch_boot_training();
+    else log_line("BOOTTRAIN: DISABLED at build time -- boot goes to the title "
+                  "screen (build with -DENABLE_BOOT_TRAINING=1 or "
+                  "-DENABLE_BOOT_ROOMMATCH=1 for those loaders)");
     if (ENABLE_REAWAKEN_BATTLE) patch_reawaken_battle();
     else log_line("REAWAKEN: DISABLED at build time -- Reawakenings use their stock "
                   "triggers (build with -DENABLE_REAWAKEN_BATTLE=1 for the "
