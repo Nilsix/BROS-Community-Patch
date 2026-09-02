@@ -1384,13 +1384,41 @@ static void patch_fast_boot(void)
 #define BOOTTR_ONLINE_SEL_RVA    0x1CDF2E8u  /* 0 rank, 1 room match, 2 free      */
 #define BOOTTR_ONLINE_SEL_ROOM   1
 
-#if ENABLE_BOOT_ROOMMATCH
-#define BOOTTR_DEST_RVA  BOOTTR_JUMP_ROOM_RVA
-#define BOOTTR_DEST_NAME "JUMP_RoomMatchMenu"
-#else
-#define BOOTTR_DEST_RVA  BOOTTR_JUMP_TRAINING_RVA
-#define BOOTTR_DEST_NAME "JUMP_TrainingCharacterSelect"
-#endif
+/* ---- the boot destination is chosen at RUN TIME -------------------------
+   It used to be a compile-time #if, which forced one frozen DLL per boot
+   shortcut in GameModes/<mode>/dinput8.dll -- and because a mode loader
+   SHADOWS the normal one, anything shipped in Files/Matchmaking/dinput8.dll
+   silently did not reach a player who launched through a mode shortcut. That
+   is exactly how the held backstep landed in the patch and then "did not work
+   in game": the quick launchers were still installing binaries built before it.
+   Now one DLL serves every shortcut and the launcher says which it wants
+   through the BROS_BOOT_MODE environment variable:
+       BROS_BOOT_MODE=training    -> JUMP_TrainingCharacterSelect
+       BROS_BOOT_MODE=roommatch   -> JUMP_RoomMatchMenu
+       BROS_BOOT_MODE=none        -> leave the boot alone
+       unset                      -> whatever the build's flags said
+   so the quick launchers can install the SHIPPED dll like the normal launcher
+   does and still boot straight where they mean to. */
+static int g_boot_room    = ENABLE_BOOT_ROOMMATCH;                 /* 1 = room match */
+static int g_boot_enabled = (ENABLE_BOOT_TRAINING || ENABLE_BOOT_ROOMMATCH);
+#define BOOTTR_DEST_RVA  (g_boot_room ? BOOTTR_JUMP_ROOM_RVA : BOOTTR_JUMP_TRAINING_RVA)
+#define BOOTTR_DEST_NAME (g_boot_room ? "JUMP_RoomMatchMenu" : "JUMP_TrainingCharacterSelect")
+
+/* Reads the launcher's request. Leaves the build's own defaults alone when the
+   variable is absent, so an existing GameModes loader keeps behaving exactly as
+   it does today. */
+static void boot_mode_from_env(void)
+{
+    char v[32];
+    DWORD n = GetEnvironmentVariableA("BROS_BOOT_MODE", v, sizeof(v));
+    if (n == 0 || n >= sizeof(v)) return;
+    if (!strcmp(v, "training"))       { g_boot_enabled = 1; g_boot_room = 0; }
+    else if (!strcmp(v, "roommatch")) { g_boot_enabled = 1; g_boot_room = 1; }
+    else if (!strcmp(v, "none"))      { g_boot_enabled = 0; }
+    else { log_line("BOOTTRAIN: BROS_BOOT_MODE='%s' not understood -- ignored", v); return; }
+    log_line("BOOTTRAIN: BROS_BOOT_MODE='%s' -- boot %s", v,
+             g_boot_enabled ? (g_boot_room ? "-> room match" : "-> training") : "left alone");
+}
 #define BOOTTR_SETUP_PTR_RVA     0x1CFBAB8u  /* the scene-setup singleton         */
 #define BOOTTR_SETUP_SIZE        0x4D0u      /* what the issuer allocates for it  */
 #define BOOTTR_SETUP_CTOR_RVA    0x82CF10u   /* its constructor; returns the obj  */
@@ -1418,7 +1446,7 @@ static void boottr_handoff(void* flow, void* cmd)
             *slot = o;
         }
     }
-#if ENABLE_BOOT_ROOMMATCH
+    if (g_boot_room) {
     /* The room-match issuer (0x1407E6847) writes no mode at all -- the online
        menu has already chosen by then, through the selector this sets. */
     (void)o;
@@ -1426,7 +1454,7 @@ static void boottr_handoff(void* flow, void* cmd)
     if (!said) { said = 1;
         log_line("BOOTTRAIN: online selector at RVA 0x%X set to %d (room match) "
                  "before the jump", BOOTTR_ONLINE_SEL_RVA, BOOTTR_ONLINE_SEL_ROOM); }
-#else
+    } else {
     if (o) {
         *(int*)((unsigned char*)o + BOOTTR_MODE_OFF) = BOOTTR_MODE_TRAINING;
         if (!said) { said = 1;
@@ -1436,7 +1464,7 @@ static void boottr_handoff(void* flow, void* cmd)
         log_line("BOOTTRAIN: setup singleton is NULL and could not be created -- "
                  "jumping without setting the mode, expect offline versus");
     }
-#endif
+    }
     ((void (*)(void*, void*))(mod + BOOTTR_DISPATCH_RVA))(flow, cmd);
 }
 
@@ -1481,7 +1509,7 @@ static void patch_boot_training(void)
        from */
     rel = (long long)(mod + BOOTTR_DEST_RVA) - (long long)(p + 0x18);
     if (rel > 0x7FFFFFFFLL || rel < -0x80000000LL) {
-        log_line("BOOTTRAIN: " BOOTTR_DEST_NAME " out of rel32 range -- skipped");
+        log_line("BOOTTRAIN: %s out of rel32 range -- skipped", BOOTTR_DEST_NAME);
         return;
     }
     disp32  = (int)rel;
@@ -1499,10 +1527,10 @@ static void patch_boot_training(void)
     FlushInstructionCache(GetCurrentProcess(), p, sizeof(orig));
 
     log_line("BOOTTRAIN: LOGO_NEXT handoff at RVA 0x%X rewritten -- the logo scene now "
-             "calls %p, which prepares the mode and then sends " BOOTTR_DEST_NAME
+             "calls %p, which prepares the mode and then sends %s"
              " to the dispatcher at %p, instead of "
              "raising LOGO_NEXT through vtable slot 0x88",
-             BOOTTR_WINDOW_RVA, (void*)&boottr_handoff,
+             BOOTTR_WINDOW_RVA, (void*)&boottr_handoff, BOOTTR_DEST_NAME,
              (void*)(mod + BOOTTR_DISPATCH_RVA));
 }
 
@@ -2139,7 +2167,8 @@ static DWORD WINAPI worker(LPVOID u)
     if (ENABLE_SKIP_LOGOS) patch_skip_logos();
     else log_line("SKIPLOGO: DISABLED at build time -- the four boot logos still "
                   "play before the title screen");
-    if (ENABLE_BOOT_TRAINING || ENABLE_BOOT_ROOMMATCH) patch_boot_training();
+    boot_mode_from_env();
+    if (g_boot_enabled) patch_boot_training();
     else log_line("BOOTTRAIN: DISABLED at build time -- boot goes to the title "
                   "screen (build with -DENABLE_BOOT_TRAINING=1 or "
                   "-DENABLE_BOOT_ROOMMATCH=1 for those loaders)");
