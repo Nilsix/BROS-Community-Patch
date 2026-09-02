@@ -32,15 +32,12 @@ if game_path == "":
 # RoomMatchBoot: the game boots straight to the ONLINE ROOM MATCH menu
 # (Create room / Find room), skipping the title screen and the menu walk. Same
 # shape as TrainingBoot -- a launch shortcut, no Script/, no pool tag. The
-# It installs the SHIPPED loader, Files/Matchmaking/dinput8.dll, and asks it for
-# this destination through BROS_BOOT_MODE -- so it is the normal loader, always,
-# and cannot drift from it.
+# loader is GameModes/RoomMatchBoot/dinput8.dll, built from the one canonical
+# source with -DENABLE_BOOT_ROOMMATCH=1.
 #
 # KNOWN: pressing Return from the room-match menu does not land on the ONLINE
 # menu -- see GameModes/RoomMatchBoot/README.md.
 gameMode = "RoomMatchBoot"
-# What this launcher asks the loader for, through BROS_BOOT_MODE.
-BOOT_MODE = "roommatch"
 reworks = ["OFF"]
 
 
@@ -104,17 +101,15 @@ def injectPerformanceFiles(folderName, lowspecmodornot):
 
 
 def setup_matchmaking(target_path, gameVersion):
-    # This launcher is the Community Patch launcher plus a boot shortcut, so it
-    # installs the SAME loader the normal launcher does. It used to prefer
-    # GameModes/<mode>/dinput8.dll, and because that frozen binary SHADOWS the
-    # shipped one, anything added to Files/Matchmaking/dinput8.dll never reached
-    # a player who launched through here. That is exactly how the held backstep
-    # shipped in the patch and was still reported as "does not work in game":
-    # the mode loaders had been built before it and nobody rebuilt them.
-    # The boot shortcut now travels as BROS_BOOT_MODE (see launch_patched) and
-    # the loader reads it at startup, so one dll serves every shortcut and
-    # cannot go stale.
+    # A boot shortcut ships its OWN loader: the same source built with that
+    # shortcut's flag, so it carries every patch the normal loader carries.
+    # It wins over the normal one when the folder has a dinput8.dll.
     src = os.path.join(BASE_DIR, "Files", "Matchmaking", "dinput8.dll")
+    if gameMode != "DEFAULT":
+        modeDll = os.path.join(BASE_DIR, "GameModes", f"{gameMode}", "dinput8.dll")
+        if os.path.exists(modeDll):
+            src = modeDll
+            print(f"[matchmaking] {gameMode} ships its own loader")
     try:
         shutil.copy(src, os.path.join(target_path, "dinput8.dll"))
     except Exception as e:
@@ -147,10 +142,7 @@ def launch_patched(target_path):
     exe = os.path.join(target_path, "BLEACH_Rebirth_of_Souls.exe")
     try:
         if platform.system() == "Windows":
-            # The boot shortcut is a request to the loader, not a separate build.
-            env = dict(os.environ)
-            env["BROS_BOOT_MODE"] = BOOT_MODE
-            subprocess.Popen([exe], cwd=target_path, env=env)
+            subprocess.Popen([exe], cwd=target_path)
         else:
             open_file("steam://rungameid/1689620")
     except Exception as e:
