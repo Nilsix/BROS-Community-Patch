@@ -29,6 +29,7 @@
  *      patch_reawaken_battle    the Reawakeners start the match Reawakened [OFF by default]
  *      patch_fast_boot          boot skips the clickable auto-save notice
  *      patch_skip_logos         boot skips the four publisher logo animations
+ *      patch_backstep_hold      held back/side + dash steps instead of running
  *      patch_boot_training      boot lands on Training, or on the room-match menu [OFF by default]
  *  Rebuild with build_dinput8.bat and check patch_ranked.log for one line
  *  per patch. See the header of each patch_* function for its anchors.
@@ -84,6 +85,26 @@
    selected; the default loader keeps the 0 and behaves exactly as before. */
 #ifndef ENABLE_REAWAKEN_BATTLE
 #define ENABLE_REAWAKEN_BATTLE     0   /* the Reawakeners start Reawakened */
+#endif
+
+/* "Backstep hold" -- SHIPS ON, back only. Holding the step/dash button
+   with the stick held BACK currently yields the backward run, because the dash
+   action is forward-only; a backstep only exists on the button's RELEASE frame,
+   so mashing it out of blockstun online is a coin flip. This makes the held
+   back+dash gesture emit the STEP command every frame instead, which is what
+   gives the run its frame-1 reliability.
+   ! It changes simulation, so it needs no pool tag ONLY because it is in the
+   main loader: the game can only be started through the launcher, the launcher
+   installs this DLL, so every client on the patch has it. That argument is
+   about DELIVERY -- if this ever becomes a toggle, it needs its own pool.
+   ! Shipped with the recovery defect still open: a HELD step still spams and
+   still cancels into a run far earlier than a tapped one. Measured, not
+   guessed -- the command-level guard below runs correctly and does not fix it,
+   so the cause is elsewhere (most likely the step action's own cancel windows
+   in step_?_act). Deliberate call: ship the mechanic, fix the recovery after.
+   Build -DENABLE_BACKSTEP_HOLD=0 for a loader without it. */
+#ifndef ENABLE_BACKSTEP_HOLD
+#define ENABLE_BACKSTEP_HOLD       1   /* held back+dash gives step_b, not the run */
 #endif
 
 /* ---------- shared helpers ------------------------------------------- */
@@ -672,6 +693,45 @@ static void patch_stage_new_id_gate(void)
 }
 
 /* ---- trampoline allocator, needed by the label hooks below ---------- */
+/* PART 19 backstep counters. The slots live inside the stub allocation, not in
+   the DLL, because the stub is placed near the exe and a rip-relative store from
+   it could not reach here. Nothing in this build reads them back -- they are
+   kept because the stub writes them and because they are what the dev loader's
+   heartbeat prints when this mechanic has to be measured again. */
+#define BSH_LAST         0x184      /* byte : fighter+0xFA0 last seen          */
+#define BSH_MASK         0x188      /* dword: bitmask of the values seen (0-31)*/
+#define BSH_FORCED       0x18C      /* dword: how many frames we forced a step */
+#define BSH_BLOCKED      0x190      /* dword: frames the guard declined to force*/
+/* Buffer the backstep ONLY out of blockstun, never in neutral. Reported: being
+   able to hold dash and just flick back made run -> backdash far too direct;
+   the stock motion is run, stick back to neutral as you release run, then
+   backdash. So the forced step is now gated on the fighter still being in a
+   guard/blockstun state -- the SAME range PART 24 measured: commands 5..8 (one
+   shared blank name-table entry) plus 12 (guard_in). In neutral the gesture
+   falls through to stock behaviour and gives the run, as before the patch. */
+#define BSH_ONLY_IN_STUN 1
+#define BSH_STUN_LO      5
+#define BSH_STUN_HI      8
+#define BSH_STUN_GUARD   12   /* 12..14: guard_in, just_guard, dam_short.
+                                 14 is HITSTUN, measured -- the state histogram
+                                 came back 0x40F9 with bit 14 set and last=14
+                                 after taking hits. Before this it was only ever
+                                 covered by leftover credit from a previous guard,
+                                 which worked by accident and not reliably.  */
+#define BSH_STUN2_LO     12
+#define BSH_STUN2_HI     14
+/* ...but the state has already left that range by the frame the player becomes
+   actionable, so testing it alone removed the mechanic outright: `fighter+0xFA0`
+   is NOT sticky across that transition, contrary to what PART 19 first assumed.
+   A grace window fixes it, and the reporter proposed exactly this: seeing a stun
+   state arms N frames of credit, and the force is still allowed while credit
+   remains. Long enough to cover the first actionable frame, far too short to
+   survive into neutral -- so run -> backdash still needs its real motion.
+   Counted in frames where the GESTURE is held, which is the thing that matters. */
+#define BSH_GRACE        0x194      /* byte: frames of credit left            */
+#define BSH_GRACE_N      5          /* armed on seeing a stun state           */
+static volatile unsigned char* g_bsh_cave = 0;
+
 static void* rr_alloc_near(unsigned char* anchor, size_t n)
 {
     SYSTEM_INFO si;
@@ -1702,7 +1762,7 @@ static void patch_kaiser_trace(void)
         log_line("KAISER: a trace site does not match (game updated?) -- trace skipped");
         return;
     }
-    stub = (unsigned char*)gauge_alloc_near(mod + KTR_FORM_RVA, 0x200);
+    stub = (unsigned char*)rr_alloc_near(mod + KTR_FORM_RVA, 0x200);
     if (!stub) { log_line("KAISER: no trampoline within +/-2GB -- trace skipped"); return; }
     memset(stub, 0, 0x200);
 
@@ -1762,6 +1822,286 @@ static void patch_kaiser_trace(void)
              KTR_HOOK_RVA, KTR_FORM_RVA, (void*)stub);
 }
 
+/* ================= PART 19: "Backstep hold" (TEST) ====================
+ *
+ *  WHERE THE RULE LIVES.  BrainPad is the player's pad->command encoder, built
+ *  by OPlayableBase::vfunc75 AND OOnlinePlayable::vfunc75 -- the same class
+ *  online and off. Its vfunc2 emits 6-byte records {u16 cmd, u16 dir, u16 x}
+ *  into a list the fighter then consumes; cmd indexes a table of action-name
+ *  strings, of which the ones that matter here are
+ *      1 = walk    2 = run_in    3 = step_f/_r/_b/_l    4 = dash_f_in
+ *  and for cmd 3 the direction bucket is 0/1 = f, 2 = r, 3 = b, 4 = l.
+ *
+ *  Located on the shipped 28,283,464 B build through RTTI, NOT through any
+ *  catalogued address: ".?AVBrainPad@@" -> TypeDescriptor -> COL 0x14DCC58 ->
+ *  vtable 0x142C048, whose slot 2 is 0x140410ED0. The sibling init at
+ *  0x140410DA0 confirms it -- it reads move_front/back/side_threshold and
+ *  step_front/back/side_threshold from CommonParam.fsv in that order into
+ *  this+0x70..+0x84, and vfunc2 is the only reader of those fields.
+ *
+ *  THE ASYMMETRY THIS EXISTS TO FIX.  Walk/run (1,2) are pushed on EVERY frame
+ *  the stick is held, and the dash (4) on every frame the button is held past
+ *  the threshold -- so a level-triggered command is already present on whatever
+ *  frame the fighter becomes actionable, which is why held back+dash retreats
+ *  frame 1 out of blockstun. The step (3) is pushed ONCE, on the button's
+ *  RELEASE frame, and only while the hold timer at this+0x90 is still under
+ *  `comiss [0x1414C0440]` = 15.0 -- 15 frames, the timer counting one per frame.
+ *  Mashing it therefore has to land its single release frame on the first
+ *  actionable frame. That is the coin flip, and it is not a buffering problem:
+ *  the engine's buffered_input_frame latches are on the combo-graph path
+ *  (CAppActionEvent::vfunc73), which locomotion never touches.
+ *
+ *  WHAT THIS DOES.  Hook A lets the step branch run while the button is merely
+ *  HELD past the threshold, instead of only on release. Hook B then discards
+ *  the result unless the direction bucket passes BSH_ALLOW_SIDES -- by default
+ *  bucket >= 2, i.e. back AND the two sides -- handing neutral and front back to
+ *  the dash branch untouched. So the stock forward dash is unchanged and only
+ *  the held directional gestures are re-pointed onto steps.
+ *
+ *  ! The stun test alone was NOT enough and briefly removed the mechanic: by the
+ *  frame the player is actionable again the state has already left the stun
+ *  range, so nothing was forced. `fighter+0xFA0` does not stay put across that
+ *  transition. Reported and correctly diagnosed by the player, who proposed the
+ *  grace window now implemented: seeing a stun state arms BSH_GRACE_N frames of
+ *  credit, spent one per held frame afterwards.
+ *
+ *  ! NARROWED 2026-08-31, reported from play: the buffer now applies ONLY out of
+ *  blockstun. Being able to hold the dash button and merely flick back made
+ *  run -> backdash far too direct -- the stock motion is run, stick back to
+ *  neutral as the run is released, then backdash. Forcing the step in neutral
+ *  removed that whole step. The gate is the fighter's current command being in
+ *  the guard/blockstun range measured in the dev loader (5..8 plus 12); anywhere else
+ *  the gesture falls through to stock behaviour and still gives the run.
+ *
+ *  ! REGRESSION FIXED 2026-08-30, reported from play. The first build pushed
+ *  cmd 3 on EVERY frame the gesture was held -- including every frame of the
+ *  step's own recovery, which the stock game never does because it pushes the
+ *  step once, on release. Symptom: a normal sidestep into a run waits out the
+ *  full step recovery, but a HELD sidestep into a held run cancelled part of
+ *  that recovery and ran early. The extra cmd 3 during the step was the only
+ *  difference from stock, so the guard removes exactly it: stub A now reads the
+ *  fighter's current command and declines to force when a step is already
+ *  running. The frame-1 property is untouched -- coming out of blockstun the
+ *  current command is a guard, not a step, so the force still happens on the
+ *  first actionable frame.
+ *  ! Consequence to watch: holding no longer re-enters at StepCancelTiming, so
+ *  a held gesture repeats only once the step has fully ended.
+ *
+ *  ! THE OPEN QUESTION THIS BUILD EXISTS TO ANSWER.  The consumer's
+ *  same-command guard (the current command at fighter+0xFA0) is set only by the
+ *  combo-graph selection passes, so a locomotion command is dispatched with no
+ *  de-duplication -- the step should re-enter as soon as step_b_act's own
+ *  CancelTiming/StepCancelTiming allows, i.e. it should CHAIN. Whether that
+ *  chain is playable or awful is exactly what this variant is for. The brake,
+ *  if one is wanted, is data: the cancel windows in each character's .tadjpkg.
+ *
+ *  Hook sites, with the bytes asserted before anything is written:
+ *      0x140411A31  84 DB 0F 84 81 01 00 00   test bl,bl / je hold   (8 stolen)
+ *      0x140411B92  48 3B 7C 24 50            cmp rdi,[rsp+0x50]     (5 stolen)
+ *  bl = "released this frame", sil = "button active", r13b = "hold > 15" are
+ *  all set at 0x140411969/196F/197A and live in non-volatile registers, so they
+ *  survive the helper call the step branch makes at 0x140411B17.
+ *  0x140411B92 is reached ONLY from 0x140411B53 and by fall-through from
+ *  0x140411B8D, both inside the step branch, so hooking it catches all five
+ *  directions and nothing else.
+ *
+ *  Ported to the public patch on 2026-09-02 from the dev loader, where it has
+ *  been played and iterated on since 2026-08-30. This is the ONLY thing that
+ *  came across -- no other dev-build mechanic travels with it. */
+#define BSH_HOOKA_RVA    0x411A31
+#define BSH_HOOKB_RVA    0x411B92
+#define BSH_STEP_ENTRY   0x411A4C   /* mov word [rsp+0x20],3                  */
+#define BSH_REL_CHECK    0x411A39   /* the original post-`test bl,bl` path    */
+#define BSH_HOLD_BR      0x411BBA   /* the dash/run branch                    */
+#define BSH_PUSH_CONT    0x411B97   /* je 0x140411DFB, just past the stolen 5 */
+/* Which direction buckets the held gesture may turn into a step. The bucket is
+   0 = neutral, 1 = front, 2 = right, 3 = back, 4 = left -- verified: the front
+   case writes r12w at 0x140411B4D and r12d is loaded with 1 at 0x140411A1F/A2B,
+   immediately before the step branch. So "back and the two sides" is the single
+   test `bucket >= 2`, and neutral/front keep the stock forward dash.
+   SHIPPED AT 1 since 2026-08-31. The sides were held back while the force applied
+   wherever the gesture was held, because the recovery defect -- held steps that
+   spam and cancel into a run far too early -- would have been multiplied by
+   three. BSH_ONLY_IN_STUN removed the support for that: the force now happens
+   only out of blockstun and only for BSH_GRACE_N frames, so a held gesture in
+   neutral no longer produces anything to spam. -DBSH_ALLOW_SIDES=0 restores the
+   back-only build. */
+#ifndef BSH_ALLOW_SIDES
+#define BSH_ALLOW_SIDES  1
+#endif
+/* BrainPad+0x28 is the FIGHTER. Verified two ways in vfunc2 itself: 0x14041315D
+   reads `byte [rcx+0xFA0]` -- the same "current command" byte the consumer reads
+   as `local_be4` before deciding whether to re-dispatch -- and 0x1404133CF does
+   `cmp dword [rax+0xC00], 0x14`, the chara id PART 12 already uses. */
+#define BSH_FIGHTER      0x28
+#define BSH_CURCMD       0xFA0
+#define BSH_STUBB        0xC0       /* stub B's offset inside the allocation  */
+#define BSH_FLAG         0x180      /* the "we forced this step" byte         */
+
+static void patch_backstep_hold(void)
+{
+    static const unsigned char origA[8] =
+        {0x84,0xDB,0x0F,0x84,0x81,0x01,0x00,0x00};
+    static const unsigned char origB[5] =
+        {0x48,0x3B,0x7C,0x24,0x50};
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    unsigned char* siteA;
+    unsigned char* siteB;
+    unsigned char* stub;
+    unsigned char  b[512];
+    int n = 0;
+    int jhold[8], njh = 0, jrel, jok, jnobit, jforce, jforce2, jblocked, jspend, i;
+    DWORD old;
+
+    if (!mod) return;
+    siteA = mod + BSH_HOOKA_RVA;
+    siteB = mod + BSH_HOOKB_RVA;
+    if (memcmp(siteA, origA, sizeof(origA)) != 0) {
+        log_line("BACKSTEP: no `test bl,bl / je` at RVA 0x%X (game updated?) -- skipped",
+                 BSH_HOOKA_RVA);
+        return;
+    }
+    if (memcmp(siteB, origB, sizeof(origB)) != 0) {
+        log_line("BACKSTEP: no `cmp rdi,[rsp+0x50]` at RVA 0x%X (game updated?) -- skipped",
+                 BSH_HOOKB_RVA);
+        return;
+    }
+    stub = (unsigned char*)rr_alloc_near(siteA, 0x400);
+    if (!stub) { log_line("BACKSTEP: no trampoline within +/-2GB -- skipped"); return; }
+    memset(stub, 0, 0x400);
+    memset(b, 0x90, sizeof(b));
+
+/* rel32 to an absolute address in the exe, from the current point in the stub */
+#define BABS(rva) do { int _v = (int)((long long)(mod + (rva)) - (long long)(stub + n + 4)); \
+                       memcpy(b + n, &_v, 4); n += 4; } while (0)
+/* a plain little-endian u32 (a struct displacement, not a relative address)   */
+#define BP32(v)   do { unsigned int _v = (unsigned int)(v); \
+                       memcpy(b + n, &_v, 4); n += 4; } while (0)
+/* rel32 to the flag byte at offset `o` in the stub; `tail` is how many bytes  */
+/* of the instruction still follow the displacement (the imm8, so 1)           */
+#define BRIP(o, tail) do { int _v = (int)((o) - (n + 4 + (tail))); \
+                           memcpy(b + n, &_v, 4); n += 4; } while (0)
+
+    /* ---------------- stub A : entered instead of `test bl,bl` -------------
+       rax is pushed rather than argued about: it looks dead at all three exit
+       targets, but HOLD_BR is reached from several predecessors and a liveness
+       argument that has to hold down every one of them is not worth 4 bytes. */
+    b[n++]=0x50; b[n++]=0x51;                                /* push rax, rcx    */
+    b[n++]=0xC6; b[n++]=0x05; BRIP(BSH_FLAG,1); b[n++]=0x00; /* mov byte[flag],0 */
+    b[n++]=0x84; b[n++]=0xDB;                                /* test bl,bl       */
+    b[n++]=0x0F; b[n++]=0x85; jrel = n; n += 4;              /* jne  L_rel       */
+    b[n++]=0x40; b[n++]=0x84; b[n++]=0xF6;                   /* test sil,sil     */
+    b[n++]=0x0F; b[n++]=0x84; jhold[njh++] = n; n += 4;      /* je   L_hold      */
+    b[n++]=0x45; b[n++]=0x84; b[n++]=0xED;                   /* test r13b,r13b   */
+    b[n++]=0x0F; b[n++]=0x84; jhold[njh++] = n; n += 4;      /* je   L_hold      */
+    b[n++]=0x49; b[n++]=0x8B; b[n++]=0x46; b[n++]=BSH_FIGHTER;
+                                                             /* mov rax,[r14+28] */
+    b[n++]=0x48; b[n++]=0x85; b[n++]=0xC0;                   /* test rax,rax     */
+    b[n++]=0x0F; b[n++]=0x84; jhold[njh++] = n; n += 4;      /* je L_hold (null) */
+    /* The guard, plus the counters that will say whether it is the right one.
+       ! An earlier round concluded this guard "removed the held sidestep" and
+       tore it out. That reading was wrong: patch_ranked.log showed the run in
+       question had loaded the older BACK-ONLY dll (Files/Matchmaking/dinput8.dll
+       was stale because dll_switch had not been re-run), which has no sidestep
+       at all. The guard had never executed. It is restored here WITH telemetry
+       so the next run reports facts instead of inviting another guess. */
+    b[n++]=0x0F; b[n++]=0xB6; b[n++]=0x80; BP32(BSH_CURCMD); /* movzx eax,[rax+FA0] */
+    b[n++]=0x88; b[n++]=0x05; BRIP(BSH_LAST,0);              /* mov  [last],al   */
+    b[n++]=0x3C; b[n++]=0x20;                                /* cmp  al,32       */
+    b[n++]=0x73; jnobit = n++;                               /* jae  L_nobit     */
+    b[n++]=0x0F; b[n++]=0xAB; b[n++]=0x05; BRIP(BSH_MASK,0); /* bts  [mask],eax  */
+    b[jnobit] = (unsigned char)(n - (jnobit + 1));           /* L_nobit:         */
+    b[n++]=0x3C; b[n++]=0x03;                                /* cmp  al,3        */
+    b[n++]=0x0F; b[n++]=0x84; jblocked = n; n += 4;          /* je   L_blocked   */
+    /* in a stun state: arm the credit and force */
+    b[n++]=0x8D; b[n++]=0x48; b[n++]=(unsigned char)(0x100 - BSH_STUN_LO);
+    b[n++]=0x83; b[n++]=0xF9; b[n++]=(BSH_STUN_HI - BSH_STUN_LO);
+    b[n++]=0x76; jforce = n++;                               /* jbe L_setgrace 5..8  */
+    b[n++]=0x8D; b[n++]=0x48; b[n++]=(unsigned char)(0x100 - BSH_STUN2_LO);
+    b[n++]=0x83; b[n++]=0xF9; b[n++]=(BSH_STUN2_HI - BSH_STUN2_LO);
+    b[n++]=0x76; jforce2 = n++;                              /* jbe L_setgrace 12..14 */
+    /* out of stun: spend a frame of credit, if any is left */
+    b[n++]=0x80; b[n++]=0x3D; BRIP(BSH_GRACE,1); b[n++]=0x00;/* cmp byte[grace],0*/
+    b[n++]=0x0F; b[n++]=0x84; jhold[njh++] = n; n += 4;      /* je L_hold (spent)*/
+    b[n++]=0xFE; b[n++]=0x0D; BRIP(BSH_GRACE,0);             /* dec byte[grace]  */
+    b[n++]=0xE9; jspend = n; n += 4;                         /* jmp  L_force     */
+    b[jforce]  = (unsigned char)(n - (jforce  + 1));         /* L_setgrace:      */
+    b[jforce2] = (unsigned char)(n - (jforce2 + 1));
+    b[n++]=0xC6; b[n++]=0x05; BRIP(BSH_GRACE,1); b[n++]=BSH_GRACE_N;
+    { int r = n - (jspend + 4); memcpy(b + jspend, &r, 4); } /* L_force:         */
+    b[n++]=0xFF; b[n++]=0x05; BRIP(BSH_FORCED,0);            /* inc  [forced]    */
+    b[n++]=0xC6; b[n++]=0x05; BRIP(BSH_FLAG,1); b[n++]=0x01; /* mov byte[flag],1 */
+    b[n++]=0x59; b[n++]=0x58;                                /* pop  rcx, rax    */
+    b[n++]=0xE9; BABS(BSH_STEP_ENTRY);                       /* jmp  step        */
+    { int r = n - (jblocked + 4); memcpy(b + jblocked, &r, 4); }  /* L_blocked:  */
+    /* A step is running, so this window has done its job: burn the rest of the
+       credit. Without this the credit is never spent DURING a step -- the
+       already-stepping test sits before the grace logic -- so enough survived to
+       force a second step the moment the first ended, and a held gesture chained
+       steps faster than mashing could. Reported from play 2026-08-31. Clearing
+       it here keeps the full 5-frame tolerance for CATCHING the wake-up frame
+       while allowing exactly one step per window, which is the stated intent;
+       shrinking BSH_GRACE_N would only have limited the chain and would have cost
+       tolerance. */
+    b[n++]=0xC6; b[n++]=0x05; BRIP(BSH_GRACE,1); b[n++]=0x00;/* mov byte[grace],0*/
+    b[n++]=0xFF; b[n++]=0x05; BRIP(BSH_BLOCKED,0);           /* inc  [blocked]   */
+    b[n++]=0xE9; jhold[njh++] = n; n += 4;                   /* jmp  L_hold      */
+    for (i = 0; i < njh; i++) {                              /* L_hold:          */
+        int r = n - (jhold[i] + 4); memcpy(b + jhold[i], &r, 4);
+    }
+    b[n++]=0x59; b[n++]=0x58;                                /* pop  rcx, rax    */
+    b[n++]=0xE9; BABS(BSH_HOLD_BR);                          /* jmp  hold        */
+    { int r = n - (jrel + 4); memcpy(b + jrel, &r, 4); }     /* L_rel:           */
+    b[n++]=0x59; b[n++]=0x58;                                /* pop  rcx, rax    */
+    b[n++]=0xE9; BABS(BSH_REL_CHECK);                        /* jmp  original    */
+
+    if (n > BSH_STUBB) { log_line("BACKSTEP: stub A overflowed (%d) -- skipped", n); return; }
+
+    /* ---------------- stub B : entered instead of the record push ---------- */
+    n = BSH_STUBB;
+    b[n++]=0x80; b[n++]=0x3D; BRIP(BSH_FLAG,1); b[n++]=0x00; /* cmp byte[flag],0 */
+    b[n++]=0xC6; b[n++]=0x05; BRIP(BSH_FLAG,1); b[n++]=0x00; /* mov byte[flag],0 */
+                                                             /* (mov keeps flags)*/
+    b[n++]=0x74; jok = n++;                                  /* je   L_ok        */
+    b[n++]=0x66; b[n++]=0x83; b[n++]=0x7C; b[n++]=0x24;
+    b[n++]=0x22; b[n++]=(BSH_ALLOW_SIDES ? 0x02 : 0x03);     /* cmp word[rsp+22],N */
+    b[n++]=0x0F; b[n++]=(BSH_ALLOW_SIDES ? 0x82 : 0x85);     /* jb / jne  hold   */
+    BABS(BSH_HOLD_BR);
+    b[jok] = (unsigned char)(n - (jok + 1));                 /* L_ok:            */
+    b[n++]=0x48; b[n++]=0x3B; b[n++]=0x7C; b[n++]=0x24;
+    b[n++]=0x50;                                             /* cmp rdi,[rsp+50] */
+    b[n++]=0xE9; BABS(BSH_PUSH_CONT);                        /* jmp  continue    */
+
+    if (n > BSH_FLAG) { log_line("BACKSTEP: stub B overflowed (%d) -- skipped", n); return; }
+#undef BABS
+#undef BRIP
+#undef BP32
+
+    memcpy(stub, b, BSH_FLAG);
+    stub[BSH_FLAG] = 0;
+    g_bsh_cave = stub;
+
+    /* ---------------- redirect both sites --------------------------------- */
+    if (VirtualProtect(siteA, 8, PAGE_EXECUTE_READWRITE, &old)) {
+        int r = (int)((long long)stub - (long long)(siteA + 5));
+        siteA[0] = 0xE9; memcpy(siteA + 1, &r, 4);
+        siteA[5] = 0x90; siteA[6] = 0x90; siteA[7] = 0x90;
+        VirtualProtect(siteA, 8, old, &old);
+    } else { log_line("BACKSTEP: VirtualProtect failed on hook A -- skipped"); return; }
+
+    if (VirtualProtect(siteB, 5, PAGE_EXECUTE_READWRITE, &old)) {
+        int r = (int)((long long)(stub + BSH_STUBB) - (long long)(siteB + 5));
+        siteB[0] = 0xE9; memcpy(siteB + 1, &r, 4);
+        VirtualProtect(siteB, 5, old, &old);
+    } else { log_line("BACKSTEP: VirtualProtect failed on hook B -- skipped"); return; }
+
+    log_line("BACKSTEP: installed -- held %s+dash now emits the step every frame "
+             "(hooks at 0x%X and 0x%X, stub at %p)",
+             BSH_ALLOW_SIDES ? "back/left/right" : "back",
+             BSH_HOOKA_RVA, BSH_HOOKB_RVA, (void*)stub);
+}
+
+
 static DWORD WINAPI worker(LPVOID u)
 {
     (void)u;
@@ -1803,6 +2143,10 @@ static DWORD WINAPI worker(LPVOID u)
     else log_line("BOOTTRAIN: DISABLED at build time -- boot goes to the title "
                   "screen (build with -DENABLE_BOOT_TRAINING=1 or "
                   "-DENABLE_BOOT_ROOMMATCH=1 for those loaders)");
+    if (ENABLE_BACKSTEP_HOLD) patch_backstep_hold();
+    else log_line("BACKSTEP: DISABLED at build time -- a held back+dash still gives "
+                  "the backward run (build with -DENABLE_BACKSTEP_HOLD=1 for the "
+                  "held backstep and sidesteps)");
     if (ENABLE_REAWAKEN_BATTLE) patch_reawaken_battle();
     else log_line("REAWAKEN: DISABLED at build time -- Reawakenings use their stock "
                   "triggers (build with -DENABLE_REAWAKEN_BATTLE=1 for the "
