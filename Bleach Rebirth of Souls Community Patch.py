@@ -577,7 +577,26 @@ try:
         except Exception as e:
             print(f"Error launching patched game: {e}")
 
-    def launch(gameVersion):
+    def launch(gameVersion, boot_mode=None):
+        """boot_mode is a Quick Launch shortcut: "TrainingBoot" or "RoomMatchBoot".
+        It is not a game mode -- it changes no simulation, it only repoints the
+        command the logo flow hands off to, so the game opens on the screen you
+        wanted instead of the title screen. It travels the same way the
+        standalone Quick Launch scripts at the repo root send it: as the game
+        mode for this one launch, so setup_matchmaking() installs
+        GameModes/<mode>/dinput8.dll (the normal loader plus that one boot
+        patch). Restored in the finally below, otherwise the shortcut would
+        stick to the next normal launch and to the Game Modes page labels."""
+        global gameMode
+        _saved_mode = gameMode
+        if boot_mode:
+            gameMode = boot_mode
+        try:
+            _launch_impl(gameVersion)
+        finally:
+            gameMode = _saved_mode
+
+    def _launch_impl(gameVersion):
         pulling_from_git()
         if not os.path.exists(os.path.join(BASE_DIR,"GameModes","TeamBattle","TokenOpen.txt")):
             config["TEAM_BATTLE"] = "OFF"
@@ -639,12 +658,10 @@ try:
                 srcPath = os.path.join(BASE_DIR,"GameModes",f"{gameMode}","Script")
                 dstPath = os.path.join(game_path,"Script")
 
-
-                shutil.copytree(srcPath, dstPath, dirs_exist_ok=True)
-                srcPath = os.path.join(BASE_DIR,"GameModes",f"{gameMode}","Script")
-                dstPath = os.path.join(game_path,"Script")
-
-                shutil.copytree(srcPath, dstPath, dirs_exist_ok=True)
+                # A boot shortcut is a loader and has no Script/ at all, and
+                # copytree raises on a source that is not there.
+                if os.path.exists(srcPath):
+                    shutil.copytree(srcPath, dstPath, dirs_exist_ok=True)
 
 
             #team battle injection
@@ -751,8 +768,51 @@ try:
 
 
     #box
-    container = Frame(window, bg=bgcolor)
-    container.pack(expand=YES, fill=BOTH, padx=34, pady=6)
+    # Scrollable viewport: a screen shorter than the tallest page used to cut
+    # the bottom buttons off with no way to reach them, so every page now lives
+    # inside a canvas that scrolls vertically. The scrollbar only shows up when
+    # the content really is taller than the window.
+    viewport = Frame(window, bg=bgcolor)
+    viewport.pack(expand=YES, fill=BOTH)
+    scrollCanvas = Canvas(viewport, bg=bgcolor, highlightthickness=0, bd=0,
+                          takefocus=0)
+    scrollBar = ttk.Scrollbar(viewport, orient=VERTICAL,
+                              command=scrollCanvas.yview,
+                              style="Bros.Vertical.TScrollbar")
+    scrollCanvas.configure(yscrollcommand=scrollBar.set)
+    scrollCanvas.pack(side=LEFT, expand=YES, fill=BOTH)
+
+    # padx/pady on the Frame itself, because the old pack() padding cannot be
+    # used once the frame is an item inside the canvas.
+    container = Frame(scrollCanvas, bg=bgcolor, padx=34, pady=6)
+    _containerItem = scrollCanvas.create_window((0, 0), window=container, anchor="nw")
+
+    def _sync_scroll(_event=None):
+        # Keep the scrollregion and the item width in step with the canvas, and
+        # add or drop the scrollbar depending on whether it is needed.
+        scrollCanvas.itemconfigure(_containerItem, width=scrollCanvas.winfo_width())
+        scrollCanvas.configure(scrollregion=scrollCanvas.bbox("all"))
+        needed = container.winfo_reqheight() > scrollCanvas.winfo_height()
+        mapped = bool(scrollBar.winfo_ismapped())
+        if needed and not mapped:
+            scrollBar.pack(side=RIGHT, fill=Y, before=scrollCanvas)
+        elif mapped and not needed:
+            scrollBar.pack_forget()
+            scrollCanvas.yview_moveto(0)
+
+    container.bind("<Configure>", _sync_scroll)
+    scrollCanvas.bind("<Configure>", _sync_scroll)
+
+    def _on_mousewheel(event):
+        # bind_all, so the wheel works wherever the cursor is -- except over a
+        # combobox, which uses the wheel to change its own value.
+        if isinstance(event.widget, ttk.Combobox):
+            return
+        if not scrollBar.winfo_ismapped():
+            return
+        scrollCanvas.yview_scroll(int(-event.delta / 120), "units")
+
+    window.bind_all("<MouseWheel>", _on_mousewheel)
     mainPage = Frame(container,bg=bgcolor)
     settingsPage = Frame(container,bg=bgcolor)
     gameModesPage = Frame(container,bg=bgcolor)
@@ -772,6 +832,9 @@ try:
 
     # Version panel: two small status pills. Each shows a short explanation on
     # hover (reuses the Tooltip class) so the numbers aren't confusing.
+    # The GameVersions/ folder the Quick Launch buttons force, so a shortcut
+    # never runs vanilla (which has no loader and would ignore it).
+    COMMUNITY_VERSION = "Bleach Rebirth of Souls Community Patch"
     LATEST_STRING = get_latest()
     _have_latest  = LATEST_STRING not in ("", "unknown")
     _up_to_date   = _have_latest and (VERSION_STRING == LATEST_STRING)
@@ -815,9 +878,30 @@ try:
     window.option_add("*TCombobox*Listbox.selectBackground", BTN_BG_HOVER)
     window.option_add("*TCombobox*Listbox.font", FONT_BODY)
 
+    # Same dark treatment for the viewport scrollbar created above.
+    _style.configure("Bros.Vertical.TScrollbar",
+                      background=BTN_BG, troughcolor=PANEL, bordercolor=BORDER,
+                      arrowcolor=GOLD, lightcolor=BTN_BG, darkcolor=BTN_BG,
+                      relief="flat", width=12)
+    _style.map("Bros.Vertical.TScrollbar",
+               background=[("active", BTN_BG_HOVER), ("pressed", GOLD_DARK)],
+               arrowcolor=[("active", GOLD_HOVER)])
+
     def preLauncher():
         if brosVersionList.get() != "Choose a game version":
             launch(brosVersionList.get())
+
+    # Quick Launch: the normal Community Patch launch plus a boot shortcut, so
+    # the game opens on the screen you actually wanted instead of the title
+    # screen and the menu walk. The version is forced to the Community Patch
+    # (same as the standalone Quick Launch scripts at the repo root): vanilla
+    # goes through Steam with no loader, and with no loader there is nothing to
+    # act on the shortcut, so it would silently do nothing.
+    def quickLaunchTraining():
+        launch(COMMUNITY_VERSION, boot_mode="TrainingBoot")
+
+    def quickLaunchRoomMatch():
+        launch(COMMUNITY_VERSION, boot_mode="RoomMatchBoot")
 
     def performanceSettingsMenu():
         settingsPage.tkraise()
@@ -1023,6 +1107,15 @@ try:
     launchButton.pack(fill=X)
     playOuter.pack(fill=X, pady=(0,7))
 
+    quickLaunchOuter, quickLaunchInner = make_card(mainPage, "Quick Launch")
+    quickLaunchTrainingButton = mkbutton(quickLaunchInner, "Quick Launch Training Mode", quickLaunchTraining, icon="🥋",
+                                          tooltip="Launch the Community Patch straight into the training character select, skipping the title screen.")
+    quickLaunchRoomMatchButton = mkbutton(quickLaunchInner, "Quick Launch Room Match", quickLaunchRoomMatch, icon="🌐",
+                                           tooltip="Launch the Community Patch straight into the online room match menu (create / find room), skipping the title screen.")
+    quickLaunchTrainingButton.pack(pady=(0,paddingYvalue), fill=X)
+    quickLaunchRoomMatchButton.pack(fill=X)
+    quickLaunchOuter.pack(fill=X, pady=(0,7))
+
     customizeOuter, customizeInner = make_card(mainPage, "Customize")
     gameModesButton = mkbutton(customizeInner, "Game Modes", gameModesMenu, icon="🎮",
                                 tooltip="Switch between different game modes (Base only, 8 konpaku, etc...)")
@@ -1223,12 +1316,18 @@ try:
         # Size the window to exactly fit its content (the tallest stacked page,
         # since they all share row0/col0), capped to the screen, then centre it.
         # Crisp at native DPI + never clipped, whatever the monitor/scaling.
+        # Measured on the container, not the window: the canvas around it has no
+        # size of its own, so asking the window would give back 1x1.
         window.update_idletasks()
         sw = window.winfo_screenwidth(); sh = window.winfo_screenheight()
-        w = min(max(window.winfo_reqwidth(), 560), sw - 40)
-        h = min(window.winfo_reqheight(), sh - 80)
+        cw = container.winfo_reqwidth(); ch = container.winfo_reqheight()
+        h = min(ch, sh - 80)
+        # A capped height means the scrollbar will show, so reserve its width.
+        w = min(max(cw + (14 if h < ch else 0), 560), sw - 40)
         x = max(0, (sw - w) // 2); y = max(0, (sh - h) // 2 - 20)
         window.geometry(f"{w}x{h}+{x}+{y}")
+        window.update_idletasks()
+        _sync_scroll()
     fit_window()
     window.deiconify()
     window.mainloop()
