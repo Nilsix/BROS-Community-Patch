@@ -63,6 +63,7 @@
 #define ENABLE_AIZEN_KIKON_COUNTER 0   /* 2026-08-06: off, precaution (see header) */
 #define ENABLE_AIZEN_FLAMECOST     0   /* 2026-08-06: off, CRASHES (see header)    */
 #define ENABLE_ROOM_RESULT_MENU    1   /* room match ends on a result menu          */
+#define ENABLE_UIRES_GUARD         1   /* NULL guard for the UI resource-table lookup */
 
 /* ---- boot shortcuts, ported from the dev environment 2026-08-26 --------
    FAST_BOOT and SKIP_LOGOS are ON here: they are what makes a normal launch
@@ -109,6 +110,41 @@ static void log_line(const char* fmt, ...)
 #else
     (void)fmt;
 #endif
+}
+
+
+/* ---- trampoline allocation within rel32 reach of a hook site ---------
+   An E9 jmp only reaches +/-2GB, so a code cave has to land near the exe.
+   VirtualAlloc with an address hint does that.
+
+   ! This function is REQUIRED, not new convenience: patch_kaiser_trace
+   below has always called gauge_alloc_near and this file has never defined
+   it. mingw-gcc accepted that silently -- kaiser_trace is static and never
+   invoked, so -O2 deleted it before the linker could object -- but any
+   C99-conforming compiler (clang, zig cc) refuses the file outright. Now
+   it builds with either. -------------------------------------------- */
+static void* gauge_alloc_near(unsigned char* anchor, size_t n)
+{
+    SYSTEM_INFO si;
+    uintptr_t gran, a, d, base;
+    void* p;
+    int i;
+    GetSystemInfo(&si);
+    gran = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
+    a = (uintptr_t)anchor;
+    for (d = gran; d < 0x60000000ULL; d += gran) {
+        uintptr_t cands[2];
+        cands[0] = a - d;
+        cands[1] = a + d;
+        for (i = 0; i < 2; i++) {
+            base = cands[i] & ~(gran - 1);
+            if (base < 0x10000) continue;
+            p = VirtualAlloc((void*)base, n, MEM_COMMIT | MEM_RESERVE,
+                             PAGE_EXECUTE_READWRITE);
+            if (p) return p;
+        }
+    }
+    return NULL;
 }
 
 /* ================= PART 1: dinput8 proxy (forward to real) =========== */
@@ -1762,6 +1798,112 @@ static void patch_kaiser_trace(void)
              KTR_HOOK_RVA, KTR_FORM_RVA, (void*)stub);
 }
 
+
+/* =====================================================================
+ *  patch_uires_guard -- the Training -> Battle -> CharaSelect -> Battle crash
+ *
+ *  Ported from the dev environment 2026-09-07. This is the fix players
+ *  report as "the Nel crash": it was deployed into a working tree on
+ *  2026-09-05, never committed, and commit 52f919d's revert then took the
+ *  shipped dinput8.dll back to a build that predates the guard. No commit
+ *  in this repository has ever carried it. It carries it now.
+ *
+ *  CRASH: access violation at exe+0x9DB40A -- reading from 0x4
+ *
+ *      0x9DB400  mov    [rsp+8], rbx
+ *      0x9DB405  mov    [rsp+10h], rdi
+ *      0x9DB40A  movsxd rax, [rcx+4]      <-- rcx = NULL
+ *
+ *  0x9DB400 is the UI resource-table lookup: find_row_by_id(table, id). It
+ *  reads a row count at table+4 and walks 8-byte entries from table+0xC
+ *  comparing a dword id, returning the matching row or 0. Its callers at
+ *  0x23EAA0.. parse the row as CSV, so this is the model/resource index.
+ *
+ *  Requesting a UI page whose scene is absent -- whose .cat data was never
+ *  loaded -- lands here with a NULL table. Training loads
+ *  ui_TrainingMenu_*.cat because STrainingMenu exists; Battle does not.
+ *  Going Training -> Battle -> CharacterSelect -> Battle asks for a row out
+ *  of a table that is no longer loaded, and the lookup dereferences NULL.
+ *  Which character was on the cursor coming back in is irrelevant -- Nel
+ *  was simply who got picked. It is not a Nel bug and not an asset bug.
+ *
+ *  EVERY call site already null-checks the RETURN value:
+ *
+ *      call 0x1409db400 ; test rax,rax ; jne .. ; xor r15d,r15d
+ *      call 0x1409db400 ; mov rcx,rax  ; test rax,rax ; je ..
+ *
+ *  so "not found" is a state the callers are written to handle. The lookup
+ *  simply never checks its own argument. Returning 0 for a NULL table is
+ *  therefore not a behaviour change invented here -- it is the answer the
+ *  callers already expect for a row that is not present.
+ *
+ *  5-byte detour to a near cave; the stolen instruction is one whole
+ *  instruction (mov [rsp+8],rbx, exactly 5 bytes) so nothing is padded and
+ *  no half instruction is left behind. The site is byte-verified first, so
+ *  a game update is a logged skip, never a crash.
+ * ===================================================================== */
+#define UIRES_GUARD_RVA  0x9DB400
+static volatile LONG64 g_uires_skips = 0;   /* NULL UI resource table */
+
+static void patch_uires_guard(void)
+{
+    static const unsigned char orig[5] = {
+        0x48,0x89,0x5C,0x24,0x08            /* mov [rsp+8], rbx */
+    };
+    unsigned char* mod = (unsigned char*)GetModuleHandleA(NULL);
+    unsigned char* site;
+    unsigned char* stub;
+    void* ctr = (void*)&g_uires_skips;
+    unsigned char b[96];
+    int n = 0, off_jne, off_ok;
+    long long rel;
+    DWORD old;
+
+    if (!mod) return;
+    site = mod + UIRES_GUARD_RVA;
+
+    if (memcmp(site, orig, sizeof(orig)) != 0) {
+        log_line("UIRESGUARD: bytes at RVA 0x%X are %02X %02X %02X %02X %02X, expected"
+                 " 48 89 5C 24 08 (game updated?) -- skipped, the Training->Battle"
+                 " ->CharaSelect->Battle NULL lookup still crashes",
+                 UIRES_GUARD_RVA, site[0], site[1], site[2], site[3], site[4]);
+        return;
+    }
+
+    stub = (unsigned char*)gauge_alloc_near(site, 128);
+    if (!stub) { log_line("UIRESGUARD: no trampoline within +/-2GB -- skipped"); return; }
+
+    b[n++]=0x48; b[n++]=0x85; b[n++]=0xC9;                  /* test rcx,rcx         */
+    b[n++]=0x75; off_jne = n++;                             /* jne  ok              */
+    b[n++]=0x48; b[n++]=0xB8; memcpy(b+n,&ctr,8); n+=8;     /* mov  rax,&counter    */
+    b[n++]=0xF0; b[n++]=0x48; b[n++]=0xFF; b[n++]=0x00;     /* lock inc qword [rax] */
+    b[n++]=0x33; b[n++]=0xC0;                               /* xor  eax,eax         */
+    b[n++]=0xC3;                                            /* ret  -- "not found"  */
+    off_ok = n;                                             /* ok:                  */
+    b[off_jne] = (unsigned char)(off_ok - (off_jne + 1));
+    memcpy(b+n, orig, sizeof(orig)); n += (int)sizeof(orig);/* stolen instruction   */
+    rel = (long long)(site + 5) - (long long)(stub + n + 5);
+    b[n++]=0xE9; memcpy(b+n,&rel,4); n+=4;                  /* jmp  back            */
+
+    memcpy(stub, b, (size_t)n);
+    FlushInstructionCache(GetCurrentProcess(), stub, (size_t)n);
+
+    rel = (long long)stub - (long long)(site + 5);
+    if (rel > 0x7FFFFFFFLL || rel < -0x80000000LL) {
+        log_line("UIRESGUARD: trampoline out of rel32 range -- skipped"); return;
+    }
+    if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &old)) {
+        log_line("UIRESGUARD: VirtualProtect failed at RVA 0x%X", UIRES_GUARD_RVA);
+        return;
+    }
+    site[0] = 0xE9; memcpy(site + 1, &rel, 4);
+    VirtualProtect(site, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    log_line("UIRESGUARD: installed at RVA 0x%X -- a UI resource lookup on a table"
+             " that was never loaded now returns \"not found\" (0), which every call"
+             " site already handles, instead of reading [NULL+4]", UIRES_GUARD_RVA);
+}
+
 static DWORD WINAPI worker(LPVOID u)
 {
     (void)u;
@@ -1790,6 +1932,9 @@ static DWORD WINAPI worker(LPVOID u)
                   "af_action_is() reads the action-name string 8 bytes low and "
                   "dereferences a non-pointer for any name >= 16 chars");
     patch_stage_new_id_gate();
+    if (ENABLE_UIRES_GUARD) patch_uires_guard();
+    else log_line("UIRESGUARD: DISABLED at build time -- Training->Battle->"
+                  "CharaSelect->Battle still crashes at exe+0x9DB40A");
     if (ENABLE_ROOM_RESULT_MENU) { patch_room_result_menu(); patch_room_rematch_wait(); }
     else log_line("ROOMRESULT: DISABLED at build time -- a room match still ends with "
                   "no menu and drops back to the room on a timer");
